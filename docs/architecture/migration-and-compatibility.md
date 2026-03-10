@@ -123,6 +123,7 @@ After migration:
 To reduce painful migrations:
 
 - avoid renaming shared columns in MVP
+- avoid renaming shared tables in MVP
 - avoid changing signed canonical payload semantics casually
 - prefer additive new tables or new optional fields over overloaded mutable columns
 - keep attachment replication concerns outside shared CRR schema

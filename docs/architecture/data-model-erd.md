@@ -171,9 +171,10 @@ erDiagram
     }
 
     CRSQL_TRACKED_PEER {
-        text site_id PK
-        text peer_site_id
+        blob site_id PK
         bigint version
+        int tag PK
+        int event PK
     }
 
     PEER_SYNC_STATE {
@@ -320,6 +321,11 @@ erDiagram
 
 重要ルール:
 
+- table shape is extension-owned, not app-designed
+- current documented structure is `site_id`, `version`, `tag`, `event`
+- primary key is `(site_id, tag, event)`
+- tag `0` means whole-database sync set
+- event `0` is receive, event `1` is send
 - app code は cursor の二重管理をしない
 - app-specific telemetry は `peer_sync_state` に逃がす
 
@@ -370,7 +376,15 @@ flowchart TB
 - clock skew is tolerated because authored time is advisory only
 - signature verification checks canonical app payload, not extension-managed CRDT metadata
 
-## 9. ERD Caveats
+## 9. Transaction Fidelity Caveats
+
+- `crsql_changes` is not a full immutable event log
+- it stores current state plus merge metadata, not every historical mutation forever
+- later writes can obscure parts of earlier transactions when querying by older `db_version`
+- therefore local SQLite transactions remain atomic locally, but transaction fidelity across peers is not fully preserved by default sync
+- if exact command-level replay boundaries matter, app-owned outbound batch logging is required
+
+## 10. ERD Caveats
 
 - Mermaid 上では relation を描いているが、DB レベルの checked FK を意味しない
 - relation integrity は scrubber と query-side null tolerance で守る

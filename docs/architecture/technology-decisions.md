@@ -25,13 +25,14 @@ MVP の判断は次で固定する。
 | `whole CRR sync` is documented as the most tested and performant model | MVP は namespace 単位 whole sync を選ぶのが妥当 | https://www.vlcn.io/docs/cr-sqlite/networking/whole-crr-sync |
 | Two CRRs must have the same schema and same set of CRRs to sync | shared schema mismatch 時は fail-closed にするしかない | https://www.vlcn.io/docs/cr-sqlite/networking/whole-crr-sync |
 | `crsql_tracked_peers` is provided for custom syncing layers to remember the last synced point for a peer | cursor を自前実装しきる必要はない。built-in を正本にするべき | https://www.vlcn.io/docs/cr-sqlite/networking/whole-crr-sync |
+| `crsql_changes` is not a full immutable transaction log; later updates can make older transaction ranges incomplete | peer 間で transaction fidelity を完全保証しない前提で worker を設計すべき | https://vlcn.io/docs/cr-sqlite/transactions |
 | CRR tables cannot use checked foreign keys or non-PK unique constraints | ERD はアプリ整合性と scrubber 前提で設計する必要がある | https://www.vlcn.io/docs/cr-sqlite/constraints |
 | `crsql_begin_alter` / `crsql_commit_alter` exist for schema alterations on CRR tables | migration policy を docs に明記する必要がある | https://vlcn.io/docs/cr-sqlite/advanced/migrations |
 | Iroh provides encrypted QUIC connections, direct connections, and relay fallback | NAT 越えや暗号 transport を自前実装しなくてよい | https://www.iroh.computer/docs/overview and https://docs.iroh.computer/concepts/relays |
 | Iroh node identifiers are `NodeId` / `EndpointId` values based on public keys | stable peer identity を EndpointID に固定できる | https://docs.iroh.computer/concepts/identifiers |
 | Iroh tickets are a convenience pattern; if you have central coordination or a directory, use `NodeId` directly | ticket を primary identity にしない方がよい | https://docs.iroh.computer/concepts/tickets |
 | mDNS/local discovery is not enabled by default and must be explicitly configured | mDNS を開発/LAN 専用の opt-in にできる | https://www.iroh.computer/docs/concepts/local_discovery |
-| The default endpoint builder enables discovery; explicit builders allow turning features off | production では discovery/relay を明示設定に寄せるべき | https://docs.rs/iroh/latest/iroh/endpoint/struct.Builder.html |
+| The default endpoint builder enables DNS discovery, while more explicit builders allow turning features off or replacing them | product policy と Iroh defaults を docs 上で分ける必要がある | https://docs.rs/iroh/latest/iroh/endpoint/struct.Builder.html |
 | `sqlite-vec` is pre-v1 and is presented as the successor direction to `sqlite-vss` | 共有本体ではなく再生成可能な local index に閉じるべき | https://github.com/asg017/sqlite-vec and https://github.com/asg017/sqlite-vss |
 | PowerSync centers on syncing backend databases such as Postgres to client-side SQLite | authoritative backend 前提なので純 P2P の核には向かない | https://www.powersync.com/sync-postgres |
 | Ditto positions itself as edge sync with built-in connectivity and mesh replication | 市場成立性の証拠にはなるが、SQLite 中核の memory substrate とは違う | https://docs.ditto.live/home/about-ditto |
@@ -206,11 +207,16 @@ flowchart TB
 
 ### 7.2 Bootstrap defaults
 
+- Iroh general defaults:
+  - default builder enables DNS discovery
+  - local discovery is opt-in, not default
+  - public relays are suitable for development/test
 - production default identity: static peer registry keyed by `EndpointID`
 - ticket usage: manual invite and first-contact convenience only
 - mDNS/local discovery: development or trusted LAN only
 - public/shared DNS discovery and public relays: development default only
 - production transport profile: explicit relay set and explicit discovery configuration
+- if product policy disables discovery, registry must provide address or relay hints in addition to `EndpointID`
 
 Inference:
 
@@ -229,6 +235,7 @@ Inference:
 
 - https://vlcn.io/docs/cr-sqlite/quickstart
 - https://www.vlcn.io/docs/cr-sqlite/networking/whole-crr-sync
+- https://vlcn.io/docs/cr-sqlite/transactions
 - https://www.vlcn.io/docs/cr-sqlite/constraints
 - https://vlcn.io/docs/cr-sqlite/advanced/migrations
 - https://www.iroh.computer/docs/overview

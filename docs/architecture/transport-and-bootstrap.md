@@ -25,6 +25,11 @@ Sources:
 
 ## 3. Default Profiles
 
+まず分けて考える。
+
+- Iroh general defaults: library が用意する一般既定
+- product transport policy: このプロダクトが production で採る制約
+
 ### Development Profile
 
 - bootstrap: static peer list or invite ticket

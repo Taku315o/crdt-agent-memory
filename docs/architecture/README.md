@@ -108,6 +108,7 @@ flowchart LR
 - `cr-sqlite` quickstart: https://vlcn.io/docs/cr-sqlite/quickstart
 - `cr-sqlite` constraints: https://www.vlcn.io/docs/cr-sqlite/constraints
 - `cr-sqlite` whole CRR sync: https://www.vlcn.io/docs/cr-sqlite/networking/whole-crr-sync
+- `cr-sqlite` transactions: https://vlcn.io/docs/cr-sqlite/transactions
 - `cr-sqlite` schema alterations: https://vlcn.io/docs/cr-sqlite/advanced/migrations
 - `Iroh` overview: https://www.iroh.computer/docs/overview
 - `Iroh` endpoint identifiers: https://docs.iroh.computer/concepts/identifiers

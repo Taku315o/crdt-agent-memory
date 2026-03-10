@@ -172,6 +172,12 @@ sequenceDiagram
 - reindex は changed memory のみ対象
 - 受信順序が前後しても最終収束する
 
+注意:
+
+- local transaction atomicity は保たれても、peer 側で同じ transaction boundary が完全再現されるとは限らない
+- `crsql_changes` は full immutable event log ではないため、sync worker は `1 command = 1 globally replayable transaction` を前提にしてはいけない
+- command-level fidelity が必要な処理は app-owned outbound batch log を別で持つ
+
 ## 6. Workflow E: Recall And Decision Trace
 
 目的:

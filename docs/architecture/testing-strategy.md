@@ -72,6 +72,7 @@ flowchart TB
 - schema mismatch causes fail-closed behavior
 - unauthorized peer never reaches data apply
 - `crsql_tracked_peers` remains the cursor truth after apply
+- tests do not assume peer-side reconstruction of exact local transaction boundaries
 
 ### Retrieval invariants
 
