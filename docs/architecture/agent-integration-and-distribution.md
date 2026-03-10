@@ -10,7 +10,7 @@ Date: 2026-03-10
 MVP の基本形は次のとおり。
 
 - core runtime: Go 製のローカル daemon
-- agent connection: HTTP API, gRPC, または MCP adapter
+- agent connection: MCP adapter, HTTP API, または gRPC
 - storage and sync: ローカル SQLite + `cr-sqlite` + Iroh
 - optional JS/TS package: あっても thin client に留める
 
@@ -41,9 +41,40 @@ flowchart LR
 
 ## 3. Recommended Integration Modes
 
-### Mode A: Local HTTP API
+既存 client に繋ぐなら、MCP adapter を第一候補にする。
 
-最初に一番おすすめなのはこれ。
+優先順位:
+
+1. MCP adapter
+2. Local HTTP API
+3. gRPC
+
+理由:
+
+- Claude Desktop や Cursor に最短で刺さる
+- core を変えずに接続面だけ追加できる
+- Go binary 配布と相性が良い
+
+### Mode A: MCP Adapter
+
+既存 AI クライアントへ繋ぐなら最初に一番おすすめなのはこれ。
+
+- `memoryd` の前段または同梱で MCP server を立てる
+- Claude Desktop / Cursor は MCP で接続する
+- core の SQLite / CRDT / sync 設計には MCP を食い込ませない
+
+向いているもの:
+
+- Claude Desktop
+- Cursor
+- MCP 対応 agent host 全般
+
+重要:
+
+- MCP は core ではなく adapter
+- canonical behavior は常に memory service API で定義する
+
+### Mode B: Local HTTP API
 
 - `memoryd` を localhost で起動
 - agent は HTTP で呼ぶ
@@ -55,7 +86,7 @@ flowchart LR
 - CLI agent
 - Python/Node/Go 混在環境
 
-### Mode B: gRPC
+### Mode C: gRPC
 
 - 型安全を強くしたい場合
 - 複数の internal services から使う場合
@@ -64,21 +95,6 @@ flowchart LR
 
 - backend service integration
 - strongly typed SDK generation
-
-### Mode C: MCP Adapter
-
-- LLM ツール利用として自然に接続したい場合
-- Claude Code / Codex / MCP 対応 agent に繋ぎたい場合
-
-向いているもの:
-
-- tool-calling ベースの agent
-- ローカルアシスタント環境
-
-重要:
-
-- MCP は core ではなく adapter
-- canonical behavior は常に memory service API で定義する
 
 ## 4. Why Not `pnpm install` As The Primary Form
 
@@ -246,6 +262,15 @@ MCP で出すなら、たとえば次の tools が自然。
 - `memory_supersede`
 - `memory_signal`
 - `memory_trace_decision`
+- `memory_explain`
+- `memory_sync_status`
+
+MVP 方針:
+
+- tools first
+- stdio first
+- Streamable HTTP second
+- resources/prompts は second step
 
 ```mermaid
 flowchart LR
@@ -265,6 +290,7 @@ MCP adapter の責務ではないもの:
 - SQLite access
 - sync protocol
 - CRDT merge
+- client-specific transport policy
 
 ## 10. Node / pnpm Story
 
@@ -352,7 +378,7 @@ flowchart TB
 結論:
 
 - core は Go daemon
-- agent との接続は HTTP か MCP
+- 既存クライアントとの接続はまず MCP
+- 自作 agent との接続は HTTP か gRPC
 - `pnpm` は optional client/wrapper distribution
 - 最初は `pnpm install して library import` ではなく `local service を立てて使う` と考えるべき
-

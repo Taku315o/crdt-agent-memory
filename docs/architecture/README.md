@@ -90,6 +90,8 @@ flowchart LR
   - 開発者向けセットアップ、ローカル起動、日常運用フロー
 - [agent-integration-and-distribution.md](./agent-integration-and-distribution.md)
   - AI agent との接続方式、配布形態、利用パターン
+- [mcp-integration.md](./mcp-integration.md)
+  - MCP adapter の位置づけ、transport 方針、Claude Desktop / Cursor / Claude API 差分
 - [migration-and-compatibility.md](./migration-and-compatibility.md)
   - schema migration、互換性判定、rolling upgrade 手順
 - [identity-time-and-signatures.md](./identity-time-and-signatures.md)
