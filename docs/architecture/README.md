@@ -86,6 +86,8 @@ flowchart LR
   - 技術選定、責務分離、一次情報ベースの比較
 - [transport-and-bootstrap.md](./transport-and-bootstrap.md)
   - Iroh の bootstrap、discovery、relay、allowlist の既定運用
+- [developer-setup-and-usage.md](./developer-setup-and-usage.md)
+  - 開発者向けセットアップ、ローカル起動、日常運用フロー
 - [migration-and-compatibility.md](./migration-and-compatibility.md)
   - schema migration、互換性判定、rolling upgrade 手順
 - [identity-time-and-signatures.md](./identity-time-and-signatures.md)
