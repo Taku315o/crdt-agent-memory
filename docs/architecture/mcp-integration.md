@@ -184,7 +184,7 @@ flowchart TB
 - implement MCP adapter
 - transport: `stdio`
 - exposed surface: tools only
-- target clients: Claude Desktop, Cursor
+- target clients: Claude Desktop, Claude Code, Cursor, Codex
 
 ### Phase 2
 
@@ -222,6 +222,10 @@ flowchart TB
 - bind policy
 - session handling
 - remote exposure policy
+
+Phase 2 gate:
+
+- do not ship HTTP transport before the security gates in [client-adapter-lifecycle.md](./client-adapter-lifecycle.md) are satisfied
 
 ## 10. Tools-First Surface
 
@@ -304,23 +308,7 @@ MVP では second step にする。
 
 client adapters should absorb installation and config differences, not memory semantics.
 
-Suggested interface:
-
-```go
-type ClientAdapter interface {
-    ID() string
-    Detect(ctx context.Context, homeDir string) (installed bool, details string, err error)
-    ConfigAuthority(homeDir string, projectDir string) []string
-    SupportsMCP() bool
-    PreferredMCPTransport() string
-    SupportsTools() bool
-    SupportsResources() bool
-    SupportsPrompts() bool
-    InstallMCPServer(ctx context.Context, spec MCPInstallSpec) error
-    RemoveMCPServer(ctx context.Context, serverName string) error
-    ValidateConfig(ctx context.Context, spec MCPInstallSpec) error
-}
-```
+Use the lifecycle contract in [client-adapter-lifecycle.md](./client-adapter-lifecycle.md).
 
 重要:
 

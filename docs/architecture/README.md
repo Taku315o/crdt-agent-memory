@@ -92,6 +92,10 @@ flowchart LR
   - AI agent との接続方式、配布形態、利用パターン
 - [mcp-integration.md](./mcp-integration.md)
   - MCP adapter の位置づけ、transport 方針、Claude Desktop / Cursor / Claude API 差分
+- [mcp-tool-contract.md](./mcp-tool-contract.md)
+  - `memory-mcp` の tools、schema、errors、idempotency、fence 応答
+- [client-adapter-lifecycle.md](./client-adapter-lifecycle.md)
+  - 各 client adapter の install / update / remove / detect 振る舞い
 - [migration-and-compatibility.md](./migration-and-compatibility.md)
   - schema migration、互換性判定、rolling upgrade 手順
 - [identity-time-and-signatures.md](./identity-time-and-signatures.md)
