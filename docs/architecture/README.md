@@ -88,6 +88,8 @@ flowchart LR
   - Iroh の bootstrap、discovery、relay、allowlist の既定運用
 - [developer-setup-and-usage.md](./developer-setup-and-usage.md)
   - 開発者向けセットアップ、ローカル起動、日常運用フロー
+- [agent-integration-and-distribution.md](./agent-integration-and-distribution.md)
+  - AI agent との接続方式、配布形態、利用パターン
 - [migration-and-compatibility.md](./migration-and-compatibility.md)
   - schema migration、互換性判定、rolling upgrade 手順
 - [identity-time-and-signatures.md](./identity-time-and-signatures.md)
