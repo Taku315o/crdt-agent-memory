@@ -1,6 +1,6 @@
 # Workflows
 
-Status: Draft v0.2
+Status: Draft v0.3
 Date: 2026-03-10
 
 ## 1. Components In Scope
@@ -10,6 +10,7 @@ Date: 2026-03-10
 - `SQLite`
 - `Index Worker`
 - `Sync Daemon`
+- `Peer Registry`
 - `Iroh Transport`
 - `Remote Peer`
 
@@ -19,7 +20,7 @@ Date: 2026-03-10
 
 - ローカルで記憶を作る
 - 同期の有無に依存せず完結する
-- 出典と関係を同時に保存する
+- shared/private を write 時点で分岐する
 
 ```mermaid
 sequenceDiagram
@@ -28,23 +29,32 @@ sequenceDiagram
     participant DB as SQLite
     participant IDX as Index Worker
 
-    Agent->>API: StoreMemory(command)
-    API->>DB: begin tx
-    API->>DB: insert artifact_refs (optional)
-    API->>DB: insert memory_nodes
-    API->>DB: insert memory_edges
-    API->>DB: insert memory_signals
-    API->>DB: commit tx
-    API->>IDX: enqueue memory_id
+    Agent->>API: StoreMemory(command, visibility)
+    alt visibility=shared
+        API->>DB: begin tx
+        API->>DB: insert artifact_refs (optional)
+        API->>DB: insert memory_nodes
+        API->>DB: insert memory_edges
+        API->>DB: insert memory_signals
+        API->>DB: commit tx
+    else visibility=private
+        API->>DB: begin tx
+        API->>DB: insert private_artifact_refs (optional)
+        API->>DB: insert private_memory_nodes
+        API->>DB: insert private_memory_edges
+        API->>DB: insert private_memory_signals
+        API->>DB: commit tx
+    end
+    API->>IDX: enqueue memory_ref
     IDX->>DB: rebuild FTS5 entry
     IDX->>DB: rebuild embedding/vector row
-    API-->>Agent: memory_id
+    API-->>Agent: memory_ref
 ```
 
 完了条件:
 
-- `memory_nodes` に append されている
-- 必要な `artifact_refs` と `memory_edges` が存在する
+- shared request は shared table family にだけ書かれる
+- private request は private table family にだけ書かれる
 - index queue に対象が積まれている
 
 ここでやらないこと:
@@ -53,7 +63,37 @@ sequenceDiagram
 - embedding の共有
 - trust policy の変更
 
-## 3. Workflow B: Peer Handshake And Delta Sync
+## 3. Workflow B: Bootstrap And Peer Selection
+
+目的:
+
+- stable peer identity を `EndpointID` に固定する
+- transport discovery と app allowlist を分離する
+
+```mermaid
+sequenceDiagram
+    participant Reg as Peer Registry
+    participant Sync as Sync Daemon
+    participant Iroh as Iroh Endpoint
+
+    Reg->>Sync: list allowlisted peers by EndpointID
+    alt manual invite
+        Sync->>Iroh: accept ticket once
+        Iroh-->>Sync: resolve initial EndpointID and address hints
+        Sync->>Reg: persist EndpointID, relay/discovery profile, address hints
+    else normal operation
+        Sync->>Iroh: dial by EndpointID using configured discovery/relay profile
+    end
+```
+
+既定運用:
+
+- production: static peer registry keyed by `EndpointID`
+- tickets: first-contact only
+- mDNS/local discovery: dev/LAN only
+- public/shared discovery and relays: explicit opt-in outside development
+
+## 4. Workflow C: Peer Handshake And Delta Sync
 
 目的:
 
@@ -69,18 +109,22 @@ sequenceDiagram
     participant DBA as SQLite A
     participant DBB as SQLite B
 
-    SyncA->>Iroh: open control stream using ticket / known peer
+    SyncA->>Iroh: dial known EndpointID
     Iroh->>SyncB: encrypted connection
-    SyncA->>SyncB: hello(protocol_version, peer_id, schema_hash, namespaces, watermarks)
-    SyncB->>SyncA: hello_ack(peer_id, schema_hash, namespaces, watermarks)
-    alt compatible
+    SyncA->>SyncB: hello(protocol_version, min_compatible_version, peer_id, schema_hash, crr_manifest_hash, namespaces)
+    SyncB->>SyncA: hello_ack(peer_id, schema_hash, crr_manifest_hash, namespaces)
+    alt compatible and allowlisted
+        SyncA->>DBA: read cursor from crsql_tracked_peers
+        SyncB->>DBB: read cursor from crsql_tracked_peers
         SyncA->>DBA: select outbound changes from crsql_changes
         SyncB->>DBB: select outbound changes from crsql_changes
         SyncA->>SyncB: push change batches
         SyncB->>SyncA: push change batches
-        SyncA->>DBA: mark peer_watermarks
-        SyncB->>DBB: mark peer_watermarks
-    else incompatible
+        SyncA->>DBA: update crsql_tracked_peers
+        SyncB->>DBB: update crsql_tracked_peers
+        SyncA->>DBA: update peer_sync_state
+        SyncB->>DBB: update peer_sync_state
+    else incompatible or denied
         SyncA-->>SyncB: reject(sync_error)
     end
 ```
@@ -88,7 +132,7 @@ sequenceDiagram
 完了条件:
 
 - allowlist で許可された peer だけが同期に進む
-- `schema_hash` 不一致は即 reject
+- `schema_hash` と `crr_manifest_hash` 不一致は即 reject
 - 同期 payload は changeset batch のみ
 
 ここでやらないこと:
@@ -97,7 +141,7 @@ sequenceDiagram
 - vector blob の送信
 - relay への永続保存
 
-## 4. Workflow C: Change Apply And Local Reindex
+## 5. Workflow D: Change Apply And Local Reindex
 
 目的:
 
@@ -113,10 +157,11 @@ sequenceDiagram
     Sync->>DB: begin tx
     Sync->>DB: insert into crsql_changes(...)
     DB-->>Sync: merged current state
-    Sync->>DB: update peer_watermarks
+    Sync->>DB: update crsql_tracked_peers
+    Sync->>DB: update peer_sync_state
     Sync->>DB: commit tx
-    Sync->>IDX: enqueue changed memory_ids
-    IDX->>DB: fetch memory_nodes by memory_id
+    Sync->>IDX: enqueue changed memory_refs
+    IDX->>DB: fetch shared memory_nodes or private_memory_nodes
     IDX->>DB: update FTS5
     IDX->>DB: update memory_embeddings
 ```
@@ -127,12 +172,12 @@ sequenceDiagram
 - reindex は changed memory のみ対象
 - 受信順序が前後しても最終収束する
 
-## 5. Workflow D: Recall And Decision Trace
+## 6. Workflow E: Recall And Decision Trace
 
 目的:
 
 - recall をローカル DB だけで完結させる
-- supporting artifact と contradiction を返せるようにする
+- shared/private の両方を一つの read API で扱う
 
 ```mermaid
 sequenceDiagram
@@ -140,11 +185,12 @@ sequenceDiagram
     participant API as Memory Service
     participant DB as SQLite
 
-    Agent->>API: Recall(query, mode)
-    API->>DB: FTS5 candidate search
-    API->>DB: sqlite-vec candidate search
-    API->>DB: fetch memory_edges and memory_signals
-    API->>DB: fetch artifact_refs/artifact_spans
+    Agent->>API: Recall(query, mode, visibility_filter)
+    API->>DB: query recall_memory_view
+    API->>DB: run FTS5 candidate search
+    API->>DB: run sqlite-vec candidate search
+    API->>DB: fetch shared/private edges and signals
+    API->>DB: fetch shared/private artifact refs and spans
     API->>API: hybrid rerank
     API-->>Agent: ranked memories + sources + contradictions
 ```
@@ -157,13 +203,12 @@ ranking inputs:
 - temporal relevance
 - trust weight
 
-ここでやらないこと:
+重要:
 
-- remote peer への live query
-- vector synchronization
-- remote re-ranking
+- `authored_at_ms` は ranking hint と display 用であり、sync ordering truth ではない
+- remote peer への live query は行わない
 
-## 6. Workflow E: Memory Correction By Supersede
+## 7. Workflow F: Memory Correction By Supersede
 
 目的:
 
@@ -176,13 +221,13 @@ sequenceDiagram
     participant API as Memory Service
     participant DB as SQLite
 
-    Agent->>API: SupersedeMemory(old_id, new_body)
+    Agent->>API: SupersedeMemory(old_ref, new_body)
     API->>DB: begin tx
-    API->>DB: insert new memory_nodes row
-    API->>DB: insert memory_edges(relation=supersedes)
-    API->>DB: update old row state=superseded
+    API->>DB: insert new memory row into same table family as old_ref
+    API->>DB: insert relation edge(type=supersedes)
+    API->>DB: update old row lifecycle_state=superseded
     API->>DB: commit tx
-    API-->>Agent: new_memory_id
+    API-->>Agent: new_memory_ref
 ```
 
 設計意図:
@@ -191,13 +236,32 @@ sequenceDiagram
 - graph から更新関係を説明できる
 - cell-wise merge に semantic overwrite を持ち込まない
 
-## 7. Workflow F: Sync Retry And Backoff
+## 8. Workflow G: Schema Upgrade Fence
+
+目的:
+
+- mixed schema peer のまま shared sync しない
+
+```mermaid
+stateDiagram-v2
+    [*] --> Compatible
+    Compatible --> Fenced: schema_hash mismatch detected
+    Fenced --> LocalOnly: sync disabled for that peer
+    LocalOnly --> Compatible: both peers upgraded and hashes match
+```
+
+運用ルール:
+
+- local-only table migration は fence 不要
+- shared CRR schema migration は sync fence 必須
+
+## 9. Workflow H: Sync Retry And Backoff
 
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
     Idle --> Discovering: schedule tick
-    Discovering --> Connecting: peer available
+    Discovering --> Connecting: allowlisted EndpointID available
     Connecting --> Handshaking: stream opened
     Handshaking --> Syncing: compatible
     Handshaking --> Failed: incompatible / auth failed
@@ -212,18 +276,19 @@ stateDiagram-v2
 retry policy:
 
 - transport failure は exponential backoff
-- schema mismatch は terminal reject
+- schema mismatch は terminal reject until upgrade
 - auth failure は terminal reject
 - apply failure は quarantine queue に逃がす
 
-## 8. Workflow Ownership Matrix
+## 10. Workflow Ownership Matrix
 
 | Workflow | Main owner | Secondary owner |
 | --- | --- | --- |
 | Local ingestion | Memory Service | Index Worker |
+| Bootstrap | Peer Registry | Sync Daemon |
 | Peer handshake | Sync Daemon | Iroh transport wrapper |
 | Change apply | Sync Daemon | SQLite adapter |
 | Recall | Memory Service | Index Worker |
 | Supersede | Memory Service | SQLite adapter |
+| Upgrade fence | Sync Daemon | migration coordinator |
 | Retry/backoff | Sync Daemon | peer policy module |
-

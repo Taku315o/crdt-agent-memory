@@ -1,6 +1,6 @@
 # Non-Functional Requirements
 
-Status: Draft v0.2
+Status: Draft v0.3
 Date: 2026-03-10
 
 ## 1. Scope
@@ -13,6 +13,7 @@ Date: 2026-03-10
 - 1 namespace あたり 100,000 memory items までを初期想定
 - attachment 本体は SQLite 外に置く
 - recall は peer 間問い合わせではなくローカル完結
+- private structured memory は local-only tables に物理分離する
 
 ## 3. NFR Mindmap
 
@@ -62,6 +63,8 @@ mindmap
 | NFR-013 | Upgrade safety | schema mismatch must fail closed, not partially sync |
 | NFR-014 | Observability | sync failures and lag are inspectable locally |
 | NFR-015 | Portability | node can migrate by moving binary, config, and SQLite file |
+| NFR-016 | Private/shared isolation | private structured memory must never enter shared CRR tables |
+| NFR-017 | Production bootstrap determinism | production nodes use explicit discovery/relay config, not implicit public defaults |
 
 ## 5. Quality Attribute Scenarios
 
@@ -102,7 +105,8 @@ mindmap
 | SEC-003 | unauthorized peers must be rejected before sync | allowlist and handshake auth |
 | SEC-004 | remote memories must not be trusted equally | local trust weights and peer policies |
 | SEC-005 | prompt injection from remote summaries must be contained | retrieval marks provenance and trust tier |
-| SEC-006 | private memory must never leak | `scope='private'` filtered at sync daemon |
+| SEC-006 | private memory must never leak | private structured memory is physically stored outside shared CRR tables |
+| SEC-007 | production connectivity must be policy-controlled | explicit discovery/relay profiles bound to allowlisted peers |
 
 ## 7. Reliability Requirements
 
@@ -112,6 +116,7 @@ mindmap
 | REL-002 | apply failure is isolated | quarantine failed batch and continue other peers |
 | REL-003 | orphan references are discoverable | scrubber detects and reports orphan rate |
 | REL-004 | long-lived nodes remain maintainable | compaction and summary generation jobs bound storage growth |
+| REL-005 | shared schema drift is contained | sync fence activates on schema or CRR manifest mismatch |
 
 ## 8. Performance Budgets
 
@@ -140,6 +145,7 @@ mindmap
 | OPS-001 | local metrics endpoint | expose sync lag, queue depth, orphan rate |
 | OPS-002 | structured logs | peer_id, namespace, batch_id, error_code |
 | OPS-003 | local diagnostics command | dump schema hash, watermarks, pending jobs |
+| OPS-006 | local diagnostics command | dump CRR manifest hash and tracked peer cursor state |
 | OPS-004 | safe startup checks | migrate local tables before daemon start |
 | OPS-005 | safe shutdown | flush in-flight watermark updates |
 
@@ -149,6 +155,7 @@ mindmap
 - one recall should inspect at most 1,000 candidate rows before rerank
 - one sync batch should cap at configurable row and byte limits
 - attachment bodies must not be stored in CRR tables
+- private structured memory families must not be mirrored into shared tables
 
 ## 11. Explicit Non-Goals
 
@@ -156,10 +163,10 @@ mindmap
 - public anonymous mesh participation
 - shared ANN index across peers
 - attachment body replication guarantees in MVP
+- mixed-schema shared sync across peers
 
 ## 12. Release Gates
 
 - all NFR-001 through NFR-006 must pass before Phase 1 release
 - all SEC requirements must pass before non-local peer rollout
 - REL-001 through REL-003 must pass before dogfooding with more than 2 peers
-

@@ -1,8 +1,15 @@
 # CRDT-Agent-Memory 仕様書
 
-Status: Draft v0.1
+Status: Draft v0.1 Concept Note
 Date: 2026-03-09
 Author: Codex
+
+Note:
+
+- この文書は構想整理用の初期仕様書
+- 実装に使う詳細設計は `docs/architecture/` 以下を正とする
+- 特に `private` の扱い、cursor 管理、bootstrap、migration、署名と時刻の意味論は詳細設計側で更新済み
+- この文書のデータモデルや workflow に詳細設計と矛盾がある場合は、常に詳細設計側を優先する
 
 ## 1. 要約
 

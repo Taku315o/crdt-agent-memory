@@ -1,6 +1,6 @@
 # TDD Workflow
 
-Status: Draft v0.2
+Status: Draft v0.3
 Date: 2026-03-10
 
 ## 1. Development Rule
@@ -29,50 +29,51 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    S1[Slice 1: StoreMemory local write]
-    S2[Slice 2: Recall lexical path]
+    S1[Slice 1: Shared vs private write routing]
+    S2[Slice 2: Recall over union view]
     S3[Slice 3: Supersede semantics]
     S4[Slice 4: CRR table enablement]
-    S5[Slice 5: Delta extract]
-    S6[Slice 6: Handshake and allowlist]
+    S5[Slice 5: Delta extract via tracked peers]
+    S6[Slice 6: EndpointID handshake and allowlist]
     S7[Slice 7: Delta apply and replay safety]
     S8[Slice 8: Reindex after sync]
-    S9[Slice 9: Trust-aware ranking]
-    S10[Slice 10: Scrubber and repair]
+    S9[Slice 9: Signature and time semantics]
+    S10[Slice 10: Migration fence and scrubber]
 
     S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9 --> S10
 ```
 
 ## 4. Slice Details
 
-### Slice 1: `StoreMemory` local write
+### Slice 1: shared vs private write routing
 
 First failing tests:
 
-- stores a memory node with required fields
-- stores optional artifact ref and edges in same request
-- rejects invalid scope or empty body
+- stores shared memory in shared table family
+- stores private memory in private table family
+- rejects invalid visibility or empty body
 
 Minimal implementation:
 
-- SQLite schema for local phase
-- repository insert
+- SQLite schema for both table families
+- repository routing
 - API handler/service method
 
 Done when:
 
-- one integration test writes and reads back a memory
+- one integration test proves private data never lands in shared tables
 
-### Slice 2: `Recall` lexical path
+### Slice 2: `Recall` over union view
 
 First failing tests:
 
 - query matches FTS5-backed memory
 - recall returns top-k and source metadata
-- private memory excluded unless explicitly requested locally
+- recall can include shared and private families from one API
 
 Minimal implementation:
 
+- recall union view
 - FTS5 virtual table
 - lexical recall query
 - result shaping
@@ -113,32 +114,34 @@ Minimal implementation:
 Done when:
 
 - `memory_nodes` changes appear in `crsql_changes`
-- `memory_embeddings` changes do not
+- `private_memory_nodes` and `memory_embeddings` changes do not
 
-### Slice 5: Delta extract
+### Slice 5: delta extract via tracked peers
 
 First failing tests:
 
 - returns only rows after watermark
-- excludes `private` scope
+- excludes private table family entirely
 - serializes changes into deterministic wire format
 
 Minimal implementation:
 
 - query builder for `crsql_changes`
+- tracked peer cursor integration
 - outbound batch encoder
 
 Done when:
 
-- same DB state produces deterministic outbound batch for the same watermark
+- same DB state produces deterministic outbound batch for the same tracked cursor
 
-### Slice 6: Handshake and allowlist
+### Slice 6: EndpointID handshake and allowlist
 
 First failing tests:
 
 - rejects unknown peer
 - rejects schema hash mismatch
 - accepts known peer and returns negotiated params
+- treats invite ticket as first-contact only and persists EndpointID
 
 Minimal implementation:
 
@@ -149,6 +152,7 @@ Minimal implementation:
 Done when:
 
 - no data apply occurs before successful handshake
+- subsequent reconnects use EndpointID without requiring fresh ticket
 
 ### Slice 7: Delta apply and replay safety
 
@@ -185,39 +189,42 @@ Done when:
 
 - sync apply makes remote memory searchable locally
 
-### Slice 9: Trust-aware ranking
+### Slice 9: signature and time semantics
 
 First failing tests:
 
-- trust weight changes rank order
-- signed but low-trust peer does not dominate high-trust peer
-- provenance remains visible in response
+- canonical payload serialization is deterministic
+- signature verification succeeds across peers
+- authored clock skew does not alter sync convergence
 
 Minimal implementation:
 
-- trust aggregation
-- hybrid rerank
+- canonical payload encoder
+- signer/verifier
+- time-aware ranking rules
 
 Done when:
 
-- ranking includes trust factor without mutating stored memory
+- signatures validate immutable claims without owning mutable lifecycle state
 
-### Slice 10: Scrubber and repair
+### Slice 10: migration fence and scrubber
 
 First failing tests:
 
 - detects orphan edges
 - detects missing artifact bodies
 - suggests repair actions without destructive mutation
+- fences shared sync on schema drift
 
 Minimal implementation:
 
 - scrubber queries
+- migration compatibility checker
 - repair report model
 
 Done when:
 
-- operator can inspect data health locally
+- operator can inspect data health and schema compatibility locally
 
 ## 5. Test Directory Guidance
 
@@ -254,13 +261,15 @@ Suggested layout:
 - adding partial sync before whole namespace sync is proven
 - relying on DB foreign keys that CRR tables cannot enforce
 - hiding semantic overwrite inside update statements
+- storing private structured memory in shared CRR tables
+- treating invite tickets as long-lived peer identity
 
 ## 9. First Three PRs
 
 ### PR 1
 
 - local schema
-- `StoreMemory`
+- shared/private routing
 - FTS recall baseline
 
 ### PR 2
@@ -272,6 +281,5 @@ Suggested layout:
 ### PR 3
 
 - CRR enablement
-- outbound delta extract
+- tracked-peer cursor integration
 - inbound apply and replay safety
-

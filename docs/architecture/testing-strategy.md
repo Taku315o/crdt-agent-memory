@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Status: Draft v0.2
+Status: Draft v0.3
 Date: 2026-03-10
 
 ## 1. Testing Goals
@@ -34,7 +34,7 @@ flowchart TB
 | Deterministic chaos | controlled packet loss / duplicate / reorder | sync convergence with backoff and duplicate delivery |
 | End-to-end | multi-process local mesh | 2-3 peers, actual recall correctness after sync |
 | Performance | latency and throughput budgets | write p95, recall p95, 10k row sync apply |
-| Security | authn/authz and provenance | allowlist rejection, signature failure, private scope leak checks |
+| Security | authn/authz and provenance | allowlist rejection, signature failure, private-family leak checks |
 
 ## 4. Component-To-Test Mapping
 
@@ -55,6 +55,7 @@ flowchart TB
 - fake signer with reproducible keys
 - fake embedding model for unit and most integration tests
 - test transport harness for duplicate/delay/drop injection
+- separate fixtures for shared and private table families
 
 ## 6. Core Invariants To Test
 
@@ -62,7 +63,7 @@ flowchart TB
 
 - `StoreMemory` never mutates existing semantic body in place
 - `SupersedeMemory` produces a new row and marks the old row superseded
-- `private` scope rows are never surfaced to outbound sync selection
+- private writes never enter shared CRR tables
 
 ### Sync invariants
 
@@ -70,12 +71,15 @@ flowchart TB
 - apply order variation converges to the same current state for supported cases
 - schema mismatch causes fail-closed behavior
 - unauthorized peer never reaches data apply
+- `crsql_tracked_peers` remains the cursor truth after apply
 
 ### Retrieval invariants
 
 - decision trace returns supporting or contradicting edges when present
 - artifact trace survives missing attachment body
 - trust weight affects rank but not raw storage state
+- authored time skew does not affect sync convergence
+- signature verification is based on canonical payload only
 
 ## 7. Required Integration Test Matrix
 
@@ -87,6 +91,8 @@ flowchart TB
 | handshake compatibility | yes | no | yes | schema hash, allowlist |
 | end-to-end 2-peer sync | yes | yes | yes | whole namespace sync |
 | relay-assisted sync | yes | yes | yes | when direct path unavailable |
+| shared/private isolation | yes | yes | no | private families never appear in shared sync |
+| migration fence | yes | yes | yes | shared sync blocked on schema drift |
 
 ## 8. Chaos And Failure Injection
 
@@ -114,6 +120,8 @@ failure cases:
 - peer disconnect between handshake and apply
 - stale watermark resume
 - missing artifact body
+- clock skew across peers
+- ticket-based first contact followed by EndpointID reuse
 
 ## 9. Performance Test Plan
 
@@ -138,6 +146,7 @@ failure cases:
 - SQLite integration
 - cr-sqlite integration
 - API integration
+- migration compatibility integration
 
 ### Slow lane
 
@@ -145,6 +154,7 @@ failure cases:
 - relay-assisted path
 - chaos
 - performance smoke
+- upgrade fence scenarios
 
 ## 11. Manual Dogfood Checklist
 
@@ -153,6 +163,7 @@ failure cases:
 - both peers write conflicting semantic updates via supersede, not overwrite
 - reconnect and verify recall parity
 - inspect sync logs and orphan rate
+- verify private memories remain absent from peer B after multiple sync rounds
 
 ## 12. Exit Criteria By Phase
 
@@ -166,10 +177,11 @@ failure cases:
 - two-peer sync green
 - replay safety green
 - schema mismatch fail-closed green
+- shared/private isolation green
 
 ### Phase 2
 
 - trust weighting green
 - signed row verification green
 - scrubber repair scenarios green
-
+- rolling-upgrade fence scenarios green
