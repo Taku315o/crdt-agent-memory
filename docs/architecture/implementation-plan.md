@@ -18,10 +18,11 @@ Date: 2026-03-12
 
 - 先に local-only で成立させる
 - shared sync はその後に足す
-- MCP は core 完成後ではなく、Phase 1 の後半で adapter として載せる
+- MCP は core 完成後ではなく、Phase 2 で adapter layer として載せる
 - private/shared 分離は最初から守る
 - `crsql_tracked_peers` を使う前提で sync を組む
 - `stdio` MCP を先に作り、HTTP は後回し
+- 署名意味論は Hardening まで遅らせず、Phase 0 後半から最小実装を入れる
 
 ## 3. Phase Overview
 
@@ -47,9 +48,10 @@ flowchart LR
 3. migration runner を作る
 4. memory service の write API を作る
 5. recall API を作る
-6. supersede/signal API を作る
+6. supersede API を作る
 7. index worker を作る
 8. diagnostics を追加する
+9. canonical payload encoder と basic sign/verify を入れる
 
 ### Must-have deliverables
 
@@ -67,6 +69,9 @@ flowchart LR
 - local recall が両 family を引ける
 - supersede が append-plus-supersede で動く
 - signal append が動く
+- local diagnostics で schema version と DB 状態が見える
+- local diagnostics で recall/index の最低限の状態が見える
+- canonical payload の encode と sign/verify が unit test で固定される
 
 ## 5. Phase 1: Shared Sync Core
 
@@ -79,12 +84,13 @@ flowchart LR
 
 1. shared tables の CRR enablement
 2. `crsql_changes` extract/apply adapter
-3. `crsql_tracked_peers` cursor integration
-4. peer registry と allowlist
-5. Iroh-based sync daemon
-6. handshake with schema/protocol checks
-7. apply after sync + reindex queue
-8. sync diagnostics
+3. local 2-DB sync harness
+4. `crsql_tracked_peers` cursor integration
+5. peer registry と allowlist
+6. Iroh-based sync daemon
+7. handshake with schema/protocol checks
+8. apply after sync + reindex queue
+9. sync diagnostics
 
 ### Must-have deliverables
 
@@ -97,6 +103,7 @@ flowchart LR
 
 ### Done criteria
 
+- 同一ホスト上の 2 DB 間で extract/apply が安定して往復できる
 - peer A の shared write が peer B に反映される
 - private write は反映されない
 - replay apply が安全
@@ -148,7 +155,7 @@ flowchart LR
 
 ### Build order
 
-1. signed payload verification
+1. sync-time signature enforcement
 2. scrubber worker
 3. richer diagnostics
 4. migration fence automation
@@ -159,7 +166,7 @@ flowchart LR
 
 ### Done criteria
 
-- signed payload verification が動く
+- sync 時に署名検証が強制される
 - orphan detection が動く
 - HTTP を有効化する時の security gates が実装済み
 - remote MCP client を安全に扱える
@@ -171,11 +178,11 @@ flowchart TB
     PR1[PR1\nRepo skeleton + schema + migrations]
     PR2[PR2\nStoreMemory + shared/private routing]
     PR3[PR3\nRecall + FTS5 + recall view]
-    PR4[PR4\nSupersede + Signal]
+    PR4[PR4\nSupersede + Signal + Lifecycle]
     PR5[PR5\nIndex worker + sqlite-vec]
-    PR6[PR6\nCRR enablement + sync adapters]
+    PR6[PR6\nCRR enablement + local 2-DB sync]
     PR7[PR7\nIroh sync daemon + handshake]
-    PR8[PR8\nApply/replay/reindex integration]
+    PR8[PR8\nTransport E2E apply/replay/reindex]
     PR9[PR9\nmemory-mcp stdio + tool contract]
     PR10[PR10\nClient adapters]
     PR11[PR11\nHardening]
@@ -193,10 +200,12 @@ flowchart TB
 - base schema
 - migration runner
 - config loader
+- diagnostics base
 
 完了条件:
 
 - empty DB を初期化できる
+- schema version と DB 状態を最低限観測できる
 
 ### PR2: `StoreMemory` + shared/private routing
 
@@ -204,7 +213,7 @@ flowchart TB
 
 - `memory.store` 相当の core API
 - shared/private family への routing
-- artifact/edge/signal の基本保存
+- artifact/edge の基本保存
 
 完了条件:
 
@@ -229,10 +238,16 @@ flowchart TB
 - supersede API
 - signal append API
 - lifecycle state 更新
+- canonical payload encoder
+- basic sign/verify helper
+- signed payload boundary checks
 
 完了条件:
 
 - overwrite を使わず更新できる
+- canonical payload の形式が固定される
+- sign/verify の基本が unit test で固定される
+- lifecycle と signed payload の責務が分離される
 
 ### PR5: Index worker + `sqlite-vec`
 
@@ -246,16 +261,19 @@ flowchart TB
 
 - shared/private 両方が semantic recall 可能
 
-### PR6: CRR enablement + sync adapters
+### PR6: CRR enablement + local 2-DB sync
 
 内容:
 
 - shared table CRR 化
 - `crsql_changes` extract/apply
+- local 2-DB integration harness
 - `crsql_tracked_peers` integration
 
 完了条件:
 
+- 同一ホスト上の 2 DB 間で shared rows が収束する
+- private tables が sync 対象に入らない
 - extension integration test 緑
 
 ### PR7: Iroh sync daemon + handshake
@@ -270,7 +288,7 @@ flowchart TB
 
 - 2 peer handshake が動く
 
-### PR8: Apply/replay/reindex integration
+### PR8: Transport E2E apply/replay/reindex
 
 内容:
 
@@ -311,7 +329,7 @@ flowchart TB
 
 内容:
 
-- signature verification
+- sync-time signature enforcement
 - scrubber
 - fence automation
 - better diagnostics
@@ -320,13 +338,38 @@ flowchart TB
 
 - dogfood 可能
 
-## 10. Testing Gates Per Phase
+## 10. CI, Docker, and Release Policy
+
+### CI
+
+- `PR1` から CI を入れる
+- fast lane は `fmt`, `vet`, unit test を回す
+- medium lane は SQLite integration, schema, FTS を回す
+- slow lane は `cr-sqlite`, local 2-DB sync, Iroh, MCP stdio integration を回す
+- slow lane は毎 push 必須ではなく、PR gate と nightly を使い分ける
+
+### Docker
+
+- Phase 0 では必須にしない
+- Docker-first にはしない
+- Phase 1 以降の multi-peer integration, demo, CI 再現性で導入する
+- local 開発の正本はネイティブ実行のまま維持する
+
+### CD
+
+- Phase 2 以降で binary release を整備する
+- HTTP MCP や remote-hosted mode を入れる段階で Docker image を追加する
+- remote deployment をやるまで Docker image を release の正本にしない
+
+## 11. Testing Gates Per Phase
 
 ### Phase 0
 
 - unit tests
 - SQLite integration tests
 - local recall tests
+- diagnostics tests
+- canonical payload/signature tests
 
 ### Phase 1
 
@@ -347,7 +390,7 @@ flowchart TB
 - scrubber tests
 - migration tests
 
-## 11. Recommended Daily Execution Order
+## 12. Recommended Daily Execution Order
 
 開発者が日々やる順序:
 
@@ -358,7 +401,7 @@ flowchart TB
 5. MCP 影響があるなら stdio integration で検証
 6. diagnostics を確認
 
-## 12. What Not To Do
+## 13. What Not To Do
 
 - Phase 0 完了前に Iroh を入れない
 - tool contract 固定前に client adapter を量産しない
@@ -366,7 +409,7 @@ flowchart TB
 - HTTP MCP を stdio より先に作らない
 - signed payload を row-level mutable state と混ぜない
 
-## 13. Recommended Immediate Next Step
+## 14. Recommended Immediate Next Step
 
 今すぐ着手するなら次の順序がよい。
 
@@ -378,4 +421,3 @@ flowchart TB
 
 - ここまでで local memory substrate の価値が見える
 - sync や MCP を足す前に core の write/read semantics を固められる
-
