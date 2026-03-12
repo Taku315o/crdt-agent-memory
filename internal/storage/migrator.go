@@ -127,9 +127,11 @@ func LoadMetadata(ctx context.Context, db *sql.DB) (Metadata, error) {
 	}
 	values := make(map[string]string, len(keys))
 	for _, key := range keys {
-		if err := db.QueryRowContext(ctx, `SELECT value FROM app_metadata WHERE key = ?`, key).Scan(&values[key]); err != nil {
+		var value string
+		if err := db.QueryRowContext(ctx, `SELECT value FROM app_metadata WHERE key = ?`, key).Scan(&value); err != nil {
 			return Metadata{}, err
 		}
+		values[key] = value
 	}
 	return Metadata{
 		SchemaHash:                   values["schema_hash"],
