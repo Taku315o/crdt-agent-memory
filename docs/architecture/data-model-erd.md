@@ -224,20 +224,20 @@ erDiagram
         bigint updated_at_ms
     }
 
-    MEMORY_NODE ||--o{ MEMORY_EDGE : from
-    MEMORY_NODE ||--o{ MEMORY_EDGE : to
-    MEMORY_NODE ||--o{ MEMORY_SIGNAL : receives
-    MEMORY_NODE ||--o{ ARTIFACT_SPAN : cited_by
-    ARTIFACT_REF ||--o{ ARTIFACT_SPAN : provides
+    MEMORY_NODE ||--o{ MEMORY_EDGE : "from"
+    MEMORY_NODE ||--o{ MEMORY_EDGE : "to"
+    MEMORY_NODE ||--o{ MEMORY_SIGNAL : "receives"
+    MEMORY_NODE ||--o{ ARTIFACT_SPAN : "cited_by"
+    ARTIFACT_REF ||--o{ ARTIFACT_SPAN : "provides"
 
-    PRIVATE_MEMORY_NODE ||--o{ PRIVATE_MEMORY_EDGE : from
-    PRIVATE_MEMORY_NODE ||--o{ PRIVATE_MEMORY_EDGE : to
-    PRIVATE_MEMORY_NODE ||--o{ PRIVATE_MEMORY_SIGNAL : receives
-    PRIVATE_MEMORY_NODE ||--o{ PRIVATE_ARTIFACT_SPAN : cited_by
-    PRIVATE_ARTIFACT_REF ||--o{ PRIVATE_ARTIFACT_SPAN : provides
+    PRIVATE_MEMORY_NODE ||--o{ PRIVATE_MEMORY_EDGE : "from"
+    PRIVATE_MEMORY_NODE ||--o{ PRIVATE_MEMORY_EDGE : "to"
+    PRIVATE_MEMORY_NODE ||--o{ PRIVATE_MEMORY_SIGNAL : "receives"
+    PRIVATE_MEMORY_NODE ||--o{ PRIVATE_ARTIFACT_SPAN : "cited_by"
+    PRIVATE_ARTIFACT_REF ||--o{ PRIVATE_ARTIFACT_SPAN : "provides"
 
-    PEER_POLICY ||--o{ PEER_SYNC_STATE : governs
-    PEER_POLICY ||--o{ SYNC_JOB : limits
+    PEER_POLICY ||--o{ PEER_SYNC_STATE : "governs"
+    PEER_POLICY ||--o{ SYNC_JOB : "limits"
 ```
 
 ## 4. Key Table Semantics
