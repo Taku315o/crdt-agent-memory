@@ -7,8 +7,8 @@ import (
 	"log"
 	"os"
 
-	"p2p_agent/internal/config"
-	"p2p_agent/internal/storage"
+	"crdt-agent-memory/internal/config"
+	"crdt-agent-memory/internal/storage"
 )
 
 func main() {

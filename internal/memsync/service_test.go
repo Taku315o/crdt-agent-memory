@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"p2p_agent/internal/memory"
-	"p2p_agent/internal/policy"
-	"p2p_agent/internal/storage"
+	"crdt-agent-memory/internal/memory"
+	"crdt-agent-memory/internal/policy"
+	"crdt-agent-memory/internal/storage"
 )
 
 func setupSyncService(t *testing.T, name string) (*memory.Service, *Service) {

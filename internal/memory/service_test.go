@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"p2p_agent/internal/storage"
+	"crdt-agent-memory/internal/storage"
 )
 
 func TestStoreRoutesSharedAndPrivateSeparately(t *testing.T) {

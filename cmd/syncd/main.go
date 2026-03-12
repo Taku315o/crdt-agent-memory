@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"log"
 
-	"p2p_agent/internal/config"
-	"p2p_agent/internal/memsync"
-	"p2p_agent/internal/policy"
-	"p2p_agent/internal/storage"
+	"crdt-agent-memory/internal/config"
+	"crdt-agent-memory/internal/memsync"
+	"crdt-agent-memory/internal/policy"
+	"crdt-agent-memory/internal/storage"
 )
 
 func main() {

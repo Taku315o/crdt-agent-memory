@@ -11,8 +11,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"p2p_agent/internal/policy"
-	"p2p_agent/internal/storage"
+	"crdt-agent-memory/internal/policy"
+	"crdt-agent-memory/internal/storage"
 )
 
 type Service struct {

@@ -1,4 +1,4 @@
-module p2p_agent
+module crdt-agent-memory
 
 go 1.23.0
 
