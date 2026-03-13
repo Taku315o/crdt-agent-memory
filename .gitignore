@@ -1,0 +1,34 @@
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+
+# Go build and test artifacts
+bin/
+dist/
+*.test
+*.out
+coverage.out
+cover.out
+*.coverprofile
+
+# Local databases and runtime files
+*.db
+*.db3
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+*.sqlite-shm
+*.sqlite-wal
+*.log
+tmp/
+
+# Local secrets and machine-specific config
+.env
+.env.local
+configs/local/
+
+# Private local documentation
+LOCAL_SETUP_AND_TEST.md
