@@ -1,0 +1,17 @@
+peer_id: "peer-a"
+database_path: "/tmp/crdt-agent-memory-dev/peer-a/agent_memory.sqlite"
+signing_key_path: "/tmp/crdt-agent-memory-dev/peer-a/peer.key"
+namespaces:
+  - "team/dev"
+extensions:
+  crsqlite_path: ""
+  sqlite_vec_path: ""
+transport:
+  discovery_profile: "dev-default"
+  relay_profile: "dev-default"
+peer_registry:
+  - peer_id: "peer-b"
+    display_name: "peer-b"
+    namespace_allowlist: ["team/dev"]
+    discovery_profile: "dev-default"
+    relay_profile: "dev-default"
