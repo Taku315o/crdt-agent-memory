@@ -32,3 +32,5 @@ configs/local/
 
 # Private local documentation
 LOCAL_SETUP_AND_TEST.md
+
+memo.md
