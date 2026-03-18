@@ -8,13 +8,17 @@ import (
 	"crdt-agent-memory/internal/memory"
 	"crdt-agent-memory/internal/policy"
 	"crdt-agent-memory/internal/storage"
+	"crdt-agent-memory/internal/testenv"
 )
 
 func setupSyncService(t *testing.T, name string) (*memory.Service, *Service) {
 	t.Helper()
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), name+".sqlite")
-	db, err := storage.OpenSQLite(ctx, dbPath)
+	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
+		Path:         dbPath,
+		CRSQLitePath: testenv.CRSQLitePath(t),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +35,7 @@ func setupSyncService(t *testing.T, name string) (*memory.Service, *Service) {
 	if err := policies.AllowPeer(ctx, "peer-b", "peer-b"); err != nil {
 		t.Fatal(err)
 	}
-	return memory.NewService(db), NewService(db, meta, policies, name)
+	return memory.NewService(db), NewService(db, meta, policies, name, "http-dev")
 }
 
 func TestHandshakeRejectsSchemaMismatch(t *testing.T) {
@@ -81,10 +85,8 @@ func TestExtractBatchExcludesPrivateTables(t *testing.T) {
 	if len(batch.Changes) == 0 {
 		t.Fatal("expected shared changes")
 	}
-	for _, change := range batch.Changes {
-		if change.Namespace != "team/dev" {
-			t.Fatalf("unexpected namespace %q in batch", change.Namespace)
-		}
+	if batch.Namespace != "team/dev" {
+		t.Fatalf("unexpected namespace %q in batch", batch.Namespace)
 	}
 }
 
@@ -124,7 +126,7 @@ func TestReplayApplyIsSafeAndTracksCursor(t *testing.T) {
 	}
 	var cursor int64
 	if err := rightSync.db.QueryRowContext(ctx, `
-		SELECT version FROM crsql_tracked_peers WHERE peer_id = 'peer-a' AND namespace = 'team/dev'
+		SELECT version FROM sync_cursors WHERE peer_id = 'peer-a' AND namespace = 'team/dev'
 	`).Scan(&cursor); err != nil {
 		t.Fatal(err)
 	}
@@ -152,5 +154,21 @@ func TestIncompatibleBatchIsQuarantined(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("quarantine count = %d, want 1", count)
+	}
+}
+
+func TestSyncStatusReflectsFence(t *testing.T) {
+	ctx := context.Background()
+	_, svc := setupSyncService(t, "peer-a")
+	_ = svc.markSyncError(ctx, "peer-b", "team/dev", "schema hash mismatch", true)
+	status, err := svc.SyncStatus(ctx, "team/dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.SchemaFenced {
+		t.Fatal("expected schema_fenced=true")
+	}
+	if status.State != "schema_fenced" {
+		t.Fatalf("state = %q, want schema_fenced", status.State)
 	}
 }

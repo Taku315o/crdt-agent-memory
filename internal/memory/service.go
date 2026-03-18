@@ -93,6 +93,12 @@ func (s *Service) Store(ctx context.Context, req StoreRequest) (string, error) {
 			return "", err
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO index_queue(queue_id, memory_space, memory_id, enqueued_at_ms)
+		VALUES(?, ?, ?, ?)
+	`, uuid.NewString(), req.Visibility, req.MemoryID, time.Now().UnixMilli()); err != nil {
+		return "", err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return "", err
@@ -187,6 +193,12 @@ func (s *Service) Supersede(ctx context.Context, oldMemoryID string, req StoreRe
 		INSERT INTO memory_edges(edge_id, from_memory_id, to_memory_id, relation_type, weight, origin_peer_id, authored_at_ms)
 		VALUES(?, ?, ?, 'supersedes', 1.0, ?, ?)
 	`, uuid.NewString(), newID, oldMemoryID, req.OriginPeerID, time.Now().UnixMilli()); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO index_queue(queue_id, memory_space, memory_id, enqueued_at_ms)
+		VALUES(?, 'shared', ?, ?)
+	`, uuid.NewString(), newID, time.Now().UnixMilli()); err != nil {
 		return "", err
 	}
 	return newID, tx.Commit()

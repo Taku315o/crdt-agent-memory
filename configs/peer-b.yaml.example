@@ -4,14 +4,24 @@ signing_key_path: "/tmp/crdt-agent-memory-dev/peer-b/peer.key"
 namespaces:
   - "team/dev"
 extensions:
-  crsqlite_path: ""
-  sqlite_vec_path: ""
+  crsqlite_path: "/Users/hizawatakuto/Documents/MyProject/crdt-agent-memory/.tools/crsqlite/crsqlite.dylib"
+  sqlite_vec_path: "/Users/hizawatakuto/Documents/MyProject/crdt-agent-memory/.tools/sqlite-vec/vec0.dylib"
 transport:
-  discovery_profile: "dev-default"
-  relay_profile: "dev-default"
+  discovery_profile: "http-dev"
+  relay_profile: "none"
+api:
+  listen_addr: "127.0.0.1:3102"
+  base_url: "http://127.0.0.1:3102"
+sync:
+  listen_addr: "127.0.0.1:3202"
+  public_url: "http://127.0.0.1:3202"
+  interval_ms: 3000
+  batch_limit: 256
+  once_timeout_ms: 5000
 peer_registry:
   - peer_id: "peer-a"
     display_name: "peer-a"
     namespace_allowlist: ["team/dev"]
-    discovery_profile: "dev-default"
-    relay_profile: "dev-default"
+    discovery_profile: "http-dev"
+    relay_profile: "none"
+    sync_url: "http://127.0.0.1:3201"

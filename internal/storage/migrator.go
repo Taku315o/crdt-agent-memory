@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,25 +15,28 @@ import (
 	"time"
 )
 
-var sharedCRRTables = []string{"artifact_refs", "memory_edges", "memory_nodes", "memory_signals"}
+var (
+	sharedCRRTables = []string{"artifact_refs", "memory_edges", "memory_nodes", "memory_signals"}
+	ErrLegacyDB     = errors.New("legacy fake-crr database detected; recreate the database from scratch")
+)
 
 type Metadata struct {
-	SchemaHash                string
-	CRRManifestHash           string
-	ProtocolVersion           string
+	SchemaHash                   string
+	CRRManifestHash              string
+	ProtocolVersion              string
 	MinCompatibleProtocolVersion string
 }
 
 func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
+	if err := detectLegacyDB(ctx, db); err != nil {
+		return Metadata{}, err
+	}
 	migrationsDir := migrationDir()
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
 		return Metadata{}, err
 	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
-	})
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -59,6 +63,7 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 
 	combined := strings.Builder{}
 	now := time.Now().UnixMilli()
+	appliedNewMigration := false
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
@@ -89,6 +94,31 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 			return Metadata{}, err
 		}
 		combined.Write(content)
+		appliedNewMigration = true
+	}
+
+	var crrEnabled string
+	err = tx.QueryRowContext(ctx, `SELECT value FROM app_metadata WHERE key = 'crr_enabled'`).Scan(&crrEnabled)
+	if err != nil && err != sql.ErrNoRows {
+		return Metadata{}, err
+	}
+	if err == sql.ErrNoRows || appliedNewMigration {
+		for _, table := range sharedCRRTables {
+			query := fmt.Sprintf(`SELECT crsql_as_crr('%s')`, table)
+			var ignored any
+			if err := tx.QueryRowContext(ctx, query).Scan(&ignored); err != nil && !strings.Contains(err.Error(), "already") {
+				return Metadata{}, fmt.Errorf("enable crr for %s: %w", table, err)
+			}
+		}
+		if err := ensureSharedTriggers(ctx, tx); err != nil {
+			return Metadata{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO app_metadata(key, value) VALUES('crr_enabled', '1')
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value
+		`); err != nil {
+			return Metadata{}, err
+		}
 	}
 
 	meta := Metadata{
@@ -99,9 +129,9 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 	}
 
 	for key, value := range map[string]string{
-		"schema_hash":                    meta.SchemaHash,
-		"crr_manifest_hash":              meta.CRRManifestHash,
-		"protocol_version":               meta.ProtocolVersion,
+		"schema_hash":                     meta.SchemaHash,
+		"crr_manifest_hash":               meta.CRRManifestHash,
+		"protocol_version":                meta.ProtocolVersion,
 		"min_compatible_protocol_version": meta.MinCompatibleProtocolVersion,
 	} {
 		if _, err := tx.ExecContext(ctx, `
@@ -117,6 +147,7 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 	}
 	return meta, nil
 }
+
 
 func LoadMetadata(ctx context.Context, db *sql.DB) (Metadata, error) {
 	keys := []string{
@@ -141,9 +172,66 @@ func LoadMetadata(ctx context.Context, db *sql.DB) (Metadata, error) {
 	}, nil
 }
 
+func detectLegacyDB(ctx context.Context, db *sql.DB) error {
+	for _, table := range []string{"crsql_clock", "capture_control"} {
+		var count int
+		if err := db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?
+		`, table).Scan(&count); err != nil {
+			return err
+		}
+		if count > 0 {
+			return ErrLegacyDB
+		}
+	}
+	return nil
+}
+
 func hashString(v string) string {
 	sum := sha256.Sum256([]byte(v))
 	return hex.EncodeToString(sum[:])
+}
+
+func ensureSharedTriggers(ctx context.Context, tx *sql.Tx) error {
+	for _, stmt := range []string{
+		`CREATE TRIGGER IF NOT EXISTS trg_memory_nodes_sync_insert AFTER INSERT ON memory_nodes BEGIN
+			INSERT INTO sync_change_log(db_version, table_name, pk_hint, namespace, memory_id, changed_at_ms)
+			VALUES(crsql_db_version() + 1, 'memory_nodes', NEW.memory_id, NEW.namespace, NEW.memory_id, NEW.authored_at_ms);
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS trg_memory_nodes_sync_update AFTER UPDATE ON memory_nodes BEGIN
+			INSERT INTO sync_change_log(db_version, table_name, pk_hint, namespace, memory_id, changed_at_ms)
+			VALUES(crsql_db_version() + 1, 'memory_nodes', NEW.memory_id, NEW.namespace, NEW.memory_id, strftime('%s','now') * 1000);
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS trg_memory_edges_sync_insert AFTER INSERT ON memory_edges BEGIN
+			INSERT INTO sync_change_log(db_version, table_name, pk_hint, namespace, memory_id, changed_at_ms)
+			VALUES(crsql_db_version() + 1, 'memory_edges', NEW.edge_id, COALESCE((SELECT namespace FROM memory_nodes WHERE memory_id = NEW.from_memory_id), (SELECT namespace FROM memory_nodes WHERE memory_id = NEW.to_memory_id), ''), COALESCE(NEW.from_memory_id, NEW.to_memory_id, ''), NEW.authored_at_ms);
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS trg_memory_edges_sync_update AFTER UPDATE ON memory_edges BEGIN
+			INSERT INTO sync_change_log(db_version, table_name, pk_hint, namespace, memory_id, changed_at_ms)
+			VALUES(crsql_db_version() + 1, 'memory_edges', NEW.edge_id, COALESCE((SELECT namespace FROM memory_nodes WHERE memory_id = NEW.from_memory_id), (SELECT namespace FROM memory_nodes WHERE memory_id = NEW.to_memory_id), ''), COALESCE(NEW.from_memory_id, NEW.to_memory_id, ''), strftime('%s','now') * 1000);
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS trg_memory_signals_sync_insert AFTER INSERT ON memory_signals BEGIN
+			INSERT INTO sync_change_log(db_version, table_name, pk_hint, namespace, memory_id, changed_at_ms)
+			VALUES(crsql_db_version() + 1, 'memory_signals', NEW.signal_id, COALESCE((SELECT namespace FROM memory_nodes WHERE memory_id = NEW.memory_id), ''), NEW.memory_id, NEW.authored_at_ms);
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS trg_memory_signals_sync_update AFTER UPDATE ON memory_signals BEGIN
+			INSERT INTO sync_change_log(db_version, table_name, pk_hint, namespace, memory_id, changed_at_ms)
+			VALUES(crsql_db_version() + 1, 'memory_signals', NEW.signal_id, COALESCE((SELECT namespace FROM memory_nodes WHERE memory_id = NEW.memory_id), ''), NEW.memory_id, strftime('%s','now') * 1000);
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS trg_artifact_refs_sync_insert AFTER INSERT ON artifact_refs BEGIN
+			INSERT INTO sync_change_log(db_version, table_name, pk_hint, namespace, memory_id, changed_at_ms)
+			VALUES(crsql_db_version() + 1, 'artifact_refs', NEW.artifact_id, NEW.namespace, '', NEW.authored_at_ms);
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS trg_artifact_refs_sync_update AFTER UPDATE ON artifact_refs BEGIN
+			INSERT INTO sync_change_log(db_version, table_name, pk_hint, namespace, memory_id, changed_at_ms)
+			VALUES(crsql_db_version() + 1, 'artifact_refs', NEW.artifact_id, NEW.namespace, '', strftime('%s','now') * 1000);
+		END;`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrationDir() string {

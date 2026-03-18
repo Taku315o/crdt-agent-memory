@@ -6,12 +6,16 @@ import (
 	"testing"
 
 	"crdt-agent-memory/internal/storage"
+	"crdt-agent-memory/internal/testenv"
 )
 
 func TestStoreRoutesSharedAndPrivateSeparately(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "memory.sqlite")
-	db, err := storage.OpenSQLite(ctx, dbPath)
+	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
+		Path:         dbPath,
+		CRSQLitePath: testenv.CRSQLitePath(t),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +53,7 @@ func TestStoreRoutesSharedAndPrivateSeparately(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM private_memory_nodes`).Scan(&privateCount); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM crsql_changes WHERE table_name = 'memory_nodes'`).Scan(&sharedChanges); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_change_log WHERE table_name = 'memory_nodes'`).Scan(&sharedChanges); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,7 +71,10 @@ func TestStoreRoutesSharedAndPrivateSeparately(t *testing.T) {
 func TestRecallUnionView(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "recall.sqlite")
-	db, err := storage.OpenSQLite(ctx, dbPath)
+	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
+		Path:         dbPath,
+		CRSQLitePath: testenv.CRSQLitePath(t),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,6 +24,7 @@ cover.out
 *.sqlite-wal
 *.log
 tmp/
+.tools/
 
 # Local secrets and machine-specific config
 .env
@@ -33,6 +34,8 @@ configs/local/
 # Private local documentation
 LOCAL_SETUP_AND_TEST.md
 
-memo.md
 
 learnt.md
+
+
+**/memo.md

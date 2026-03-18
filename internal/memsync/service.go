@@ -1,12 +1,16 @@
 package memsync
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,19 +20,18 @@ import (
 )
 
 type Service struct {
-	db       *sql.DB
-	meta     storage.Metadata
-	policies *policy.Repository
-	selfPeer string
+	db        *sql.DB
+	meta      storage.Metadata
+	policies  *policy.Repository
+	selfPeer  string
+	transport string
 }
 
-func NewService(db *sql.DB, meta storage.Metadata, policies *policy.Repository, selfPeer string) *Service {
-	return &Service{
-		db:       db,
-		meta:     meta,
-		policies: policies,
-		selfPeer: selfPeer,
+func NewService(db *sql.DB, meta storage.Metadata, policies *policy.Repository, selfPeer string, transport string) *Service {
+	if transport == "" {
+		transport = "http-dev"
 	}
+	return &Service{db: db, meta: meta, policies: policies, selfPeer: selfPeer, transport: transport}
 }
 
 func (s *Service) Handshake(ctx context.Context, req HandshakeRequest) (HandshakeResponse, error) {
@@ -40,15 +43,15 @@ func (s *Service) Handshake(ctx context.Context, req HandshakeRequest) (Handshak
 		return HandshakeResponse{}, errors.New("peer is not allowlisted")
 	}
 	if req.SchemaHash != s.meta.SchemaHash {
-		_ = s.markSyncError(ctx, req.PeerID, firstNamespace(req.Namespaces), "schema hash mismatch")
+		_ = s.markSyncError(ctx, req.PeerID, firstNamespace(req.Namespaces), "schema hash mismatch", true)
 		return HandshakeResponse{}, errors.New("schema hash mismatch")
 	}
 	if req.CRRManifestHash != s.meta.CRRManifestHash {
-		_ = s.markSyncError(ctx, req.PeerID, firstNamespace(req.Namespaces), "crr manifest hash mismatch")
+		_ = s.markSyncError(ctx, req.PeerID, firstNamespace(req.Namespaces), "crr manifest hash mismatch", true)
 		return HandshakeResponse{}, errors.New("crr manifest hash mismatch")
 	}
 	if req.MinCompatibleProtocolVersion > s.meta.ProtocolVersion || s.meta.MinCompatibleProtocolVersion > req.ProtocolVersion {
-		_ = s.markSyncError(ctx, req.PeerID, firstNamespace(req.Namespaces), "protocol mismatch")
+		_ = s.markSyncError(ctx, req.PeerID, firstNamespace(req.Namespaces), "protocol mismatch", false)
 		return HandshakeResponse{}, errors.New("protocol mismatch")
 	}
 	if len(req.Namespaces) == 0 {
@@ -65,54 +68,92 @@ func (s *Service) Handshake(ctx context.Context, req HandshakeRequest) (Handshak
 
 func (s *Service) ExtractBatch(ctx context.Context, peerID, namespace string, limit int) (Batch, error) {
 	if limit <= 0 {
-		limit = 1000
+		limit = 256
 	}
 	cursor := int64(0)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT version FROM crsql_tracked_peers WHERE peer_id = ? AND namespace = ?
+		SELECT version FROM sync_cursors WHERE peer_id = ? AND namespace = ?
 	`, peerID, namespace).Scan(&cursor)
 	if err != nil && err != sql.ErrNoRows {
 		return Batch{}, err
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT db_version, table_name, pk, op, row_json, memory_id, namespace, changed_at_ms
-		FROM crsql_changes
+	logRows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT db_version
+		FROM sync_change_log
 		WHERE namespace = ? AND db_version > ?
-		ORDER BY db_version, table_name, pk
+		ORDER BY db_version
 		LIMIT ?
 	`, namespace, cursor, limit)
+	if err != nil {
+		return Batch{}, err
+	}
+	defer logRows.Close()
+
+	var versions []int64
+	for logRows.Next() {
+		var version int64
+		if err := logRows.Scan(&version); err != nil {
+			return Batch{}, err
+		}
+		versions = append(versions, version)
+	}
+	if err := logRows.Err(); err != nil {
+		return Batch{}, err
+	}
+	if len(versions) == 0 {
+		return Batch{
+			BatchID:         uuid.NewString(),
+			FromPeerID:      s.selfPeer,
+			Namespace:       namespace,
+			SchemaHash:      s.meta.SchemaHash,
+			CRRManifestHash: s.meta.CRRManifestHash,
+		}, nil
+	}
+
+	placeholders := make([]string, 0, len(versions))
+	args := make([]any, 0, len(versions))
+	maxVersion := versions[len(versions)-1]
+	for _, version := range versions {
+		placeholders = append(placeholders, "?")
+		args = append(args, version)
+	}
+	query := fmt.Sprintf(`
+		SELECT "table", pk, cid, val, col_version, db_version, site_id, cl, seq
+		FROM crsql_changes
+		WHERE db_version IN (%s)
+		ORDER BY db_version, "table", seq
+	`, strings.Join(placeholders, ","))
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return Batch{}, err
 	}
 	defer rows.Close()
 
 	var changes []Change
-	var maxVersion int64
 	for rows.Next() {
-		var c Change
-		if err := rows.Scan(&c.DBVersion, &c.TableName, &c.PK, &c.Op, &c.RowJSON, &c.MemoryID, &c.Namespace, &c.ChangedAtMS); err != nil {
+		var table, cid string
+		var pk, siteID []byte
+		var raw sql.RawBytes
+		var colVersion, dbVersion, cl, seq int64
+		if err := rows.Scan(&table, &pk, &cid, &raw, &colVersion, &dbVersion, &siteID, &cl, &seq); err != nil {
 			return Batch{}, err
 		}
-		if c.DBVersion > maxVersion {
-			maxVersion = c.DBVersion
-		}
-		changes = append(changes, c)
+		changes = append(changes, Change{
+			Table:      table,
+			PKB64:      base64.StdEncoding.EncodeToString(pk),
+			CID:        cid,
+			Val:        encodeValue(raw),
+			ColVersion: colVersion,
+			DBVersion:  dbVersion,
+			SiteIDB64:  base64.StdEncoding.EncodeToString(siteID),
+			CL:         cl,
+			Seq:        seq,
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return Batch{}, err
 	}
-
-	sort.Slice(changes, func(i, j int) bool {
-		if changes[i].DBVersion != changes[j].DBVersion {
-			return changes[i].DBVersion < changes[j].DBVersion
-		}
-		if changes[i].TableName != changes[j].TableName {
-			return changes[i].TableName < changes[j].TableName
-		}
-		return changes[i].PK < changes[j].PK
-	})
-
 	return Batch{
 		BatchID:         uuid.NewString(),
 		FromPeerID:      s.selfPeer,
@@ -134,156 +175,24 @@ func (s *Service) ApplyBatch(ctx context.Context, fromPeerID string, batch Batch
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, `UPDATE capture_control SET suppress = 1 WHERE singleton = 1`); err != nil {
-		return err
-	}
-	defer func() {
-		_, _ = tx.ExecContext(context.Background(), `UPDATE capture_control SET suppress = 0 WHERE singleton = 1`)
-	}()
-
 	for _, change := range batch.Changes {
-		if change.Namespace != batch.Namespace {
-			return s.quarantineBatch(ctx, fromPeerID, batch, "mixed namespace batch")
+		pk, err := base64.StdEncoding.DecodeString(change.PKB64)
+		if err != nil {
+			return s.quarantineBatch(ctx, fromPeerID, batch, "invalid pk encoding")
 		}
-		switch change.TableName {
-		case "memory_nodes":
-			var row struct {
-				MemoryID       string `json:"memory_id"`
-				MemoryType     string `json:"memory_type"`
-				Namespace      string `json:"namespace"`
-				Scope          string `json:"scope"`
-				Subject        string `json:"subject"`
-				Body           string `json:"body"`
-				SourceURI      string `json:"source_uri"`
-				SourceHash     string `json:"source_hash"`
-				AuthorAgentID  string `json:"author_agent_id"`
-				OriginPeerID   string `json:"origin_peer_id"`
-				AuthoredAtMS   int64  `json:"authored_at_ms"`
-				ValidFromMS    int64  `json:"valid_from_ms"`
-				ValidToMS      int64  `json:"valid_to_ms"`
-				LifecycleState string `json:"lifecycle_state"`
-				SchemaVersion  int64  `json:"schema_version"`
-			}
-			if err := json.Unmarshal([]byte(change.RowJSON), &row); err != nil {
-				return s.quarantineBatch(ctx, fromPeerID, batch, "invalid memory_nodes row")
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO memory_nodes(
-					memory_id, memory_type, namespace, scope, subject, body, source_uri, source_hash,
-					author_agent_id, origin_peer_id, authored_at_ms, valid_from_ms, valid_to_ms,
-					lifecycle_state, schema_version, author_signature
-				) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, X'')
-				ON CONFLICT(memory_id) DO UPDATE SET
-					memory_type = excluded.memory_type,
-					namespace = excluded.namespace,
-					scope = excluded.scope,
-					subject = excluded.subject,
-					body = excluded.body,
-					source_uri = excluded.source_uri,
-					source_hash = excluded.source_hash,
-					author_agent_id = excluded.author_agent_id,
-					origin_peer_id = excluded.origin_peer_id,
-					authored_at_ms = excluded.authored_at_ms,
-					valid_from_ms = excluded.valid_from_ms,
-					valid_to_ms = excluded.valid_to_ms,
-					lifecycle_state = excluded.lifecycle_state,
-					schema_version = excluded.schema_version
-			`, row.MemoryID, row.MemoryType, row.Namespace, row.Scope, row.Subject, row.Body, row.SourceURI,
-				row.SourceHash, row.AuthorAgentID, row.OriginPeerID, row.AuthoredAtMS, row.ValidFromMS,
-				row.ValidToMS, row.LifecycleState, row.SchemaVersion); err != nil {
-				return err
-			}
-		case "memory_edges":
-			var row struct {
-				EdgeID       string  `json:"edge_id"`
-				FromMemoryID string  `json:"from_memory_id"`
-				ToMemoryID   string  `json:"to_memory_id"`
-				RelationType string  `json:"relation_type"`
-				Weight       float64 `json:"weight"`
-				OriginPeerID string  `json:"origin_peer_id"`
-				AuthoredAtMS int64   `json:"authored_at_ms"`
-			}
-			if err := json.Unmarshal([]byte(change.RowJSON), &row); err != nil {
-				return s.quarantineBatch(ctx, fromPeerID, batch, "invalid memory_edges row")
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO memory_edges(edge_id, from_memory_id, to_memory_id, relation_type, weight, origin_peer_id, authored_at_ms)
-				VALUES(?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(edge_id) DO UPDATE SET
-					from_memory_id = excluded.from_memory_id,
-					to_memory_id = excluded.to_memory_id,
-					relation_type = excluded.relation_type,
-					weight = excluded.weight,
-					origin_peer_id = excluded.origin_peer_id,
-					authored_at_ms = excluded.authored_at_ms
-			`, row.EdgeID, row.FromMemoryID, row.ToMemoryID, row.RelationType, row.Weight, row.OriginPeerID, row.AuthoredAtMS); err != nil {
-				return err
-			}
-		case "memory_signals":
-			var row struct {
-				SignalID     string  `json:"signal_id"`
-				MemoryID     string  `json:"memory_id"`
-				PeerID       string  `json:"peer_id"`
-				AgentID      string  `json:"agent_id"`
-				SignalType   string  `json:"signal_type"`
-				Value        float64 `json:"value"`
-				Reason       string  `json:"reason"`
-				AuthoredAtMS int64   `json:"authored_at_ms"`
-			}
-			if err := json.Unmarshal([]byte(change.RowJSON), &row); err != nil {
-				return s.quarantineBatch(ctx, fromPeerID, batch, "invalid memory_signals row")
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO memory_signals(signal_id, memory_id, peer_id, agent_id, signal_type, value, reason, authored_at_ms)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(signal_id) DO UPDATE SET
-					memory_id = excluded.memory_id,
-					peer_id = excluded.peer_id,
-					agent_id = excluded.agent_id,
-					signal_type = excluded.signal_type,
-					value = excluded.value,
-					reason = excluded.reason,
-					authored_at_ms = excluded.authored_at_ms
-			`, row.SignalID, row.MemoryID, row.PeerID, row.AgentID, row.SignalType, row.Value, row.Reason, row.AuthoredAtMS); err != nil {
-				return err
-			}
-		case "artifact_refs":
-			var row struct {
-				ArtifactID   string `json:"artifact_id"`
-				Namespace    string `json:"namespace"`
-				URI          string `json:"uri"`
-				ContentHash  string `json:"content_hash"`
-				Title        string `json:"title"`
-				MimeType     string `json:"mime_type"`
-				OriginPeerID string `json:"origin_peer_id"`
-				AuthoredAtMS int64  `json:"authored_at_ms"`
-			}
-			if err := json.Unmarshal([]byte(change.RowJSON), &row); err != nil {
-				return s.quarantineBatch(ctx, fromPeerID, batch, "invalid artifact_refs row")
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO artifact_refs(artifact_id, namespace, uri, content_hash, title, mime_type, origin_peer_id, authored_at_ms)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(artifact_id) DO UPDATE SET
-					namespace = excluded.namespace,
-					uri = excluded.uri,
-					content_hash = excluded.content_hash,
-					title = excluded.title,
-					mime_type = excluded.mime_type,
-					origin_peer_id = excluded.origin_peer_id,
-					authored_at_ms = excluded.authored_at_ms
-			`, row.ArtifactID, row.Namespace, row.URI, row.ContentHash, row.Title, row.MimeType, row.OriginPeerID, row.AuthoredAtMS); err != nil {
-				return err
-			}
-		default:
-			return s.quarantineBatch(ctx, fromPeerID, batch, fmt.Sprintf("unsupported table %s", change.TableName))
+		siteID, err := base64.StdEncoding.DecodeString(change.SiteIDB64)
+		if err != nil {
+			return s.quarantineBatch(ctx, fromPeerID, batch, "invalid site_id encoding")
 		}
-		if change.MemoryID != "" {
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO index_queue(queue_id, memory_space, memory_id, enqueued_at_ms)
-				VALUES(?, 'shared', ?, ?)
-				ON CONFLICT(queue_id) DO NOTHING
-			`, uuid.NewString(), change.MemoryID, time.Now().UnixMilli()); err != nil {
+		val, err := decodeValue(change.Val)
+		if err != nil {
+			return s.quarantineBatch(ctx, fromPeerID, batch, "invalid value encoding")
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO crsql_changes("table", pk, cid, val, col_version, db_version, site_id, cl, seq)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, change.Table, pk, change.CID, val, change.ColVersion, change.DBVersion, siteID, change.CL, change.Seq); err != nil {
+			if !strings.Contains(strings.ToLower(err.Error()), "unique") && !strings.Contains(strings.ToLower(err.Error()), "constraint") {
 				return err
 			}
 		}
@@ -291,7 +200,7 @@ func (s *Service) ApplyBatch(ctx context.Context, fromPeerID string, batch Batch
 
 	if batch.MaxVersion > 0 {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO crsql_tracked_peers(peer_id, namespace, version, updated_at_ms)
+			INSERT INTO sync_cursors(peer_id, namespace, version, updated_at_ms)
 			VALUES(?, ?, ?, ?)
 			ON CONFLICT(peer_id, namespace) DO UPDATE SET
 				version = excluded.version,
@@ -300,74 +209,63 @@ func (s *Service) ApplyBatch(ctx context.Context, fromPeerID string, batch Batch
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE capture_control SET suppress = 0 WHERE singleton = 1`); err != nil {
-		return err
-	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO peer_sync_state(peer_id, namespace, last_seen_at_ms, last_transport, last_path_type, last_error, last_success_at_ms)
-		VALUES(?, ?, ?, 'iroh', 'direct-or-relay', '', ?)
+		INSERT INTO peer_sync_state(peer_id, namespace, last_seen_at_ms, last_transport, last_path_type, last_error, last_success_at_ms, schema_fenced)
+		VALUES(?, ?, ?, ?, 'direct', '', ?, 0)
 		ON CONFLICT(peer_id, namespace) DO UPDATE SET
 			last_seen_at_ms = excluded.last_seen_at_ms,
 			last_transport = excluded.last_transport,
 			last_path_type = excluded.last_path_type,
 			last_error = '',
-			last_success_at_ms = excluded.last_success_at_ms
-	`, fromPeerID, batch.Namespace, time.Now().UnixMilli(), time.Now().UnixMilli()); err != nil {
+			last_success_at_ms = excluded.last_success_at_ms,
+			schema_fenced = 0
+	`, fromPeerID, batch.Namespace, time.Now().UnixMilli(), s.transport, time.Now().UnixMilli()); err != nil {
 		return err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.enqueueNamespace(ctx, batch.Namespace)
 }
 
-func SyncPair(ctx context.Context, left, right *Service, namespace string, limit int) error {
-	leftReq := HandshakeRequest{
-		ProtocolVersion:              left.meta.ProtocolVersion,
-		MinCompatibleProtocolVersion: left.meta.MinCompatibleProtocolVersion,
-		PeerID:                       left.selfPeer,
-		SchemaHash:                   left.meta.SchemaHash,
-		CRRManifestHash:              left.meta.CRRManifestHash,
-		Namespaces:                   []string{namespace},
-	}
-	rightReq := HandshakeRequest{
-		ProtocolVersion:              right.meta.ProtocolVersion,
-		MinCompatibleProtocolVersion: right.meta.MinCompatibleProtocolVersion,
-		PeerID:                       right.selfPeer,
-		SchemaHash:                   right.meta.SchemaHash,
-		CRRManifestHash:              right.meta.CRRManifestHash,
-		Namespaces:                   []string{namespace},
-	}
-	if _, err := right.Handshake(ctx, leftReq); err != nil {
-		return err
-	}
-	if _, err := left.Handshake(ctx, rightReq); err != nil {
-		return err
-	}
-
-	leftBatch, err := left.ExtractBatch(ctx, right.selfPeer, namespace, limit)
+func (s *Service) enqueueNamespace(ctx context.Context, namespace string) error {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT memory_id
+		FROM sync_change_log
+		WHERE namespace = ? AND memory_id != ''
+		ORDER BY id DESC
+		LIMIT 32
+	`, namespace)
 	if err != nil {
 		return err
 	}
-	if err := right.ApplyBatch(ctx, left.selfPeer, leftBatch); err != nil {
-		return err
+	defer rows.Close()
+	for rows.Next() {
+		var memoryID string
+		if err := rows.Scan(&memoryID); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO index_queue(queue_id, memory_space, memory_id, enqueued_at_ms)
+			VALUES(?, 'shared', ?, ?)
+		`, uuid.NewString(), memoryID, time.Now().UnixMilli()); err != nil {
+			return err
+		}
 	}
-	rightBatch, err := right.ExtractBatch(ctx, left.selfPeer, namespace, limit)
-	if err != nil {
-		return err
-	}
-	return left.ApplyBatch(ctx, right.selfPeer, rightBatch)
+	return rows.Err()
 }
 
 func (s *Service) Diagnostics(ctx context.Context) (Diagnostics, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT peer_id, namespace, version, updated_at_ms
-		FROM crsql_tracked_peers
+		FROM sync_cursors
 		ORDER BY peer_id, namespace
 	`)
 	if err != nil {
 		return Diagnostics{}, err
 	}
 	defer rows.Close()
-
 	var tracked []TrackedPeer
 	for rows.Next() {
 		var tp TrackedPeer
@@ -375,6 +273,23 @@ func (s *Service) Diagnostics(ctx context.Context) (Diagnostics, error) {
 			return Diagnostics{}, err
 		}
 		tracked = append(tracked, tp)
+	}
+	peerRows, err := s.db.QueryContext(ctx, `
+		SELECT peer_id, namespace, last_seen_at_ms, last_transport, last_path_type, last_error, last_success_at_ms, schema_fenced
+		FROM peer_sync_state
+		ORDER BY peer_id, namespace
+	`)
+	if err != nil {
+		return Diagnostics{}, err
+	}
+	defer peerRows.Close()
+	var peerStates []PeerState
+	for peerRows.Next() {
+		var state PeerState
+		if err := peerRows.Scan(&state.PeerID, &state.Namespace, &state.LastSeenAtMS, &state.LastTransport, &state.LastPathType, &state.LastError, &state.LastSuccessAtMS, &state.SchemaFenced); err != nil {
+			return Diagnostics{}, err
+		}
+		peerStates = append(peerStates, state)
 	}
 	var quarantine int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_quarantine`).Scan(&quarantine); err != nil {
@@ -384,8 +299,37 @@ func (s *Service) Diagnostics(ctx context.Context) (Diagnostics, error) {
 		SchemaHash:      s.meta.SchemaHash,
 		CRRManifestHash: s.meta.CRRManifestHash,
 		TrackedPeers:    tracked,
+		PeerStates:      peerStates,
 		QuarantineCount: quarantine,
 	}, nil
+}
+
+func (s *Service) SyncStatus(ctx context.Context, namespace string) (SyncStatus, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT peer_id, namespace, last_seen_at_ms, last_transport, last_path_type, last_error, last_success_at_ms, schema_fenced
+		FROM peer_sync_state
+		WHERE namespace = ?
+		ORDER BY peer_id
+	`, namespace)
+	if err != nil {
+		return SyncStatus{}, err
+	}
+	defer rows.Close()
+	status := SyncStatus{Namespace: namespace, State: "healthy"}
+	for rows.Next() {
+		var state PeerState
+		if err := rows.Scan(&state.PeerID, &state.Namespace, &state.LastSeenAtMS, &state.LastTransport, &state.LastPathType, &state.LastError, &state.LastSuccessAtMS, &state.SchemaFenced); err != nil {
+			return SyncStatus{}, err
+		}
+		if state.SchemaFenced {
+			status.SchemaFenced = true
+			status.State = "schema_fenced"
+		} else if state.LastError != "" && status.State == "healthy" {
+			status.State = "degraded"
+		}
+		status.Peers = append(status.Peers, state)
+	}
+	return status, rows.Err()
 }
 
 func (s *Service) quarantineBatch(ctx context.Context, fromPeerID string, batch Batch, reason string) error {
@@ -397,20 +341,25 @@ func (s *Service) quarantineBatch(ctx context.Context, fromPeerID string, batch 
 	if err != nil {
 		return err
 	}
-	_ = s.markSyncError(ctx, fromPeerID, batch.Namespace, reason)
+	_ = s.markSyncError(ctx, fromPeerID, batch.Namespace, reason, strings.Contains(reason, "schema"))
 	return errors.New(reason)
 }
 
-func (s *Service) markSyncError(ctx context.Context, peerID, namespace, msg string) error {
+func (s *Service) markSyncError(ctx context.Context, peerID, namespace, msg string, schemaFenced bool) error {
+	fenced := 0
+	if schemaFenced {
+		fenced = 1
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO peer_sync_state(peer_id, namespace, last_seen_at_ms, last_transport, last_path_type, last_error, last_success_at_ms)
-		VALUES(?, ?, ?, 'iroh', 'direct-or-relay', ?, 0)
+		INSERT INTO peer_sync_state(peer_id, namespace, last_seen_at_ms, last_transport, last_path_type, last_error, last_success_at_ms, schema_fenced)
+		VALUES(?, ?, ?, ?, 'direct', ?, 0, ?)
 		ON CONFLICT(peer_id, namespace) DO UPDATE SET
 			last_seen_at_ms = excluded.last_seen_at_ms,
 			last_transport = excluded.last_transport,
 			last_path_type = excluded.last_path_type,
-			last_error = excluded.last_error
-	`, peerID, namespace, time.Now().UnixMilli(), msg)
+			last_error = excluded.last_error,
+			schema_fenced = excluded.schema_fenced
+	`, peerID, namespace, time.Now().UnixMilli(), s.transport, msg, fenced)
 	return err
 }
 
@@ -419,4 +368,189 @@ func firstNamespace(namespaces []string) string {
 		return ""
 	}
 	return namespaces[0]
+}
+
+func encodeValue(raw []byte) Value {
+	if raw == nil {
+		return Value{Null: true}
+	}
+	if len(raw) == 0 {
+		text := ""
+		return Value{Text: &text}
+	}
+	if json.Valid(raw) {
+		text := string(raw)
+		return Value{Text: &text}
+	}
+	text := string(raw)
+	return Value{Text: &text}
+}
+
+func decodeValue(v Value) (any, error) {
+	switch {
+	case v.Null:
+		return nil, nil
+	case v.Integer != nil:
+		return *v.Integer, nil
+	case v.Float != nil:
+		return *v.Float, nil
+	case v.Text != nil:
+		return *v.Text, nil
+	case v.BlobB64 != nil:
+		return base64.StdEncoding.DecodeString(*v.BlobB64)
+	default:
+		return nil, nil
+	}
+}
+
+type HTTPServer struct {
+	Service           *Service
+	AllowedNamespaces func(peerID string) map[string]struct{}
+}
+
+func (h *HTTPServer) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/sync/handshake", h.handleHandshake)
+	mux.HandleFunc("/v1/sync/pull", h.handlePull)
+	mux.HandleFunc("/v1/sync/apply", h.handleApply)
+	return mux
+}
+
+func (h *HTTPServer) handleHandshake(w http.ResponseWriter, r *http.Request) {
+	var req HandshakeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !h.namespacesAllowed(req.PeerID, req.Namespaces) {
+		http.Error(w, "namespace not allowlisted", http.StatusForbidden)
+		return
+	}
+	resp, err := h.Service.Handshake(r.Context(), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (h *HTTPServer) handlePull(w http.ResponseWriter, r *http.Request) {
+	var req PullRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !h.namespacesAllowed(req.PeerID, []string{req.Namespace}) {
+		http.Error(w, "namespace not allowlisted", http.StatusForbidden)
+		return
+	}
+	batch, err := h.Service.ExtractBatch(r.Context(), req.PeerID, req.Namespace, req.Limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(batch)
+}
+
+func (h *HTTPServer) handleApply(w http.ResponseWriter, r *http.Request) {
+	var req ApplyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !h.namespacesAllowed(req.FromPeerID, []string{req.Batch.Namespace}) {
+		http.Error(w, "namespace not allowlisted", http.StatusForbidden)
+		return
+	}
+	if err := h.Service.ApplyBatch(r.Context(), req.FromPeerID, req.Batch); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HTTPServer) namespacesAllowed(peerID string, requested []string) bool {
+	if h.AllowedNamespaces == nil {
+		return true
+	}
+	allowed := h.AllowedNamespaces(peerID)
+	if len(allowed) == 0 {
+		return false
+	}
+	for _, namespace := range requested {
+		if _, ok := allowed[namespace]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+type HTTPClient struct {
+	Client  *http.Client
+	BaseURL string
+}
+
+func (c *HTTPClient) Handshake(ctx context.Context, req HandshakeRequest) (HandshakeResponse, error) {
+	var resp HandshakeResponse
+	err := c.postJSON(ctx, "/v1/sync/handshake", req, &resp)
+	return resp, err
+}
+
+func (c *HTTPClient) Pull(ctx context.Context, req PullRequest) (Batch, error) {
+	var batch Batch
+	err := c.postJSON(ctx, "/v1/sync/pull", req, &batch)
+	return batch, err
+}
+
+func (c *HTTPClient) Apply(ctx context.Context, req ApplyRequest) error {
+	return c.postJSON(ctx, "/v1/sync/apply", req, nil)
+}
+
+func (c *HTTPClient) postJSON(ctx context.Context, path string, reqBody any, respBody any) error {
+	if c.Client == nil {
+		c.Client = &http.Client{Timeout: 5 * time.Second}
+	}
+	raw, err := json.Marshal(reqBody)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+path, bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(resp.Body)
+		return fmt.Errorf("%s", strings.TrimSpace(buf.String()))
+	}
+	if respBody == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(respBody)
+}
+
+func AllowedNamespaceSet(namespaces []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(namespaces))
+	for _, namespace := range namespaces {
+		out[namespace] = struct{}{}
+	}
+	return out
+}
+
+func IntersectNamespaces(left []string, right []string) []string {
+	rightSet := AllowedNamespaceSet(right)
+	var out []string
+	for _, namespace := range left {
+		if _, ok := rightSet[namespace]; ok {
+			out = append(out, namespace)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
