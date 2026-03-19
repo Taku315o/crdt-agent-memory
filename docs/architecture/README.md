@@ -94,6 +94,8 @@ flowchart LR
   - MCP adapter の位置づけ、transport 方針、Claude Desktop / Cursor / Claude API 差分
 - [implementation-plan.md](./implementation-plan.md)
   - 段階的な実装手順、PR 順序、各 Phase の完了条件
+- [project-progress.md](./project-progress.md)
+  - 現在の実装進捗、完了済み項目、未実装項目のサマリ
 - [mcp-tool-contract.md](./mcp-tool-contract.md)
   - `memory-mcp` の tools、schema、errors、idempotency、fence 応答
 - [client-adapter-lifecycle.md](./client-adapter-lifecycle.md)
