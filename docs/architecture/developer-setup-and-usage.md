@@ -369,8 +369,9 @@ select count(*) from index_queue where processed_at_ms = 0;
 
 ## 8. MCP Verification
 
-`memory-mcp` は現時点で `memory.sync_status` のみ実装済み。
-bridge は `/v1/sync/status` の `data` / `warnings` / `request_id` をそのまま tool response に流す。
+`memory-mcp` は現時点で `memory.store` / `memory.recall` / `memory.sync_status` を実装済み。
+bridge は必ず `memoryd` の HTTP API を叩き、`/v1/memory/store` / `/v1/memory/recall` / `/v1/sync/status` の `data` / `warnings` / `request_id` をそのまま tool response に流す。
+手動 smoke は `memory.store` で書いて `memory.recall` で読む流れを MCP だけで完結できる。
 
 手動で呼ぶ場合は、MCP stdio framing を使う。
 
@@ -385,5 +386,6 @@ bridge は `/v1/sync/status` の `data` / `warnings` / `request_id` をそのま
 ## 8. Known Gaps
 
 - transport は Iroh ではなく `http-dev`
-- MCP surface は `memory.sync_status` のみ
+- MCP surface は `memory.store` / `memory.recall` / `memory.sync_status`
+- `memory.supersede` / `memory.signal` は未公開
 - embedding state は deterministic local embedding であり、production semantic model ではない

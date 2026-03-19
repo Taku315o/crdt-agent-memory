@@ -3,15 +3,18 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"crdt-agent-memory/internal/config"
 )
@@ -31,11 +34,11 @@ type rpcResponse struct {
 }
 
 type apiEnvelope struct {
-	OK        bool            `json:"ok"`
-	Data      json.RawMessage `json:"data,omitempty"`
-	Error     *apiError       `json:"error,omitempty"`
-	Warnings  []string        `json:"warnings"`
-	RequestID string          `json:"request_id"`
+	OK        bool      `json:"ok"`
+	Data      any       `json:"data,omitempty"`
+	Error     *apiError `json:"error,omitempty"`
+	Warnings  []string  `json:"warnings"`
+	RequestID string    `json:"request_id"`
 }
 
 type apiError struct {
@@ -44,6 +47,37 @@ type apiError struct {
 	Retryable bool   `json:"retryable"`
 	Details   any    `json:"details,omitempty"`
 }
+
+type toolCallParams struct {
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+}
+
+type storeToolRequest struct {
+	MemoryID      string `json:"memory_id,omitempty"`
+	Visibility    string `json:"visibility"`
+	Namespace     string `json:"namespace"`
+	MemoryType    string `json:"memory_type,omitempty"`
+	Scope         string `json:"scope,omitempty"`
+	Subject       string `json:"subject,omitempty"`
+	Body          string `json:"body"`
+	SourceURI     string `json:"source_uri,omitempty"`
+	SourceHash    string `json:"source_hash,omitempty"`
+	AuthorAgentID string `json:"author_agent_id,omitempty"`
+	OriginPeerID  string `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64  `json:"authored_at_ms,omitempty"`
+}
+
+type recallToolRequest struct {
+	Query          string   `json:"query"`
+	Namespace      string   `json:"namespace,omitempty"`
+	Namespaces     []string `json:"namespaces,omitempty"`
+	TopK           int      `json:"top_k,omitempty"`
+	IncludePrivate bool     `json:"include_private,omitempty"`
+	Limit          int      `json:"limit,omitempty"`
+}
+
+var apiClient = &http.Client{Timeout: 10 * time.Second}
 
 func main() {
 	var configPath string
@@ -95,82 +129,223 @@ func handle(cfg config.Config, req rpcRequest) rpcResponse {
 		return rpcResponse{}
 	case "tools/list":
 		resp.Result = map[string]any{
-			"tools": []map[string]any{
-				{
-					"name":        "memory.sync_status",
-					"description": "return local sync health without mutating state",
-					"inputSchema": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"namespace": map[string]any{"type": "string"},
-						},
-						"required": []string{"namespace"},
-					},
-				},
-			},
+			"tools": toolDefinitions(),
 		}
 	case "tools/call":
-		var params struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-		}
+		var params toolCallParams
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			resp.Error = map[string]any{"code": -32602, "message": err.Error()}
 			return resp
 		}
-		if params.Name != "memory.sync_status" {
-			resp.Error = map[string]any{"code": -32601, "message": "unknown tool"}
-			return resp
-		}
-		namespace, _ := params.Arguments["namespace"].(string)
-		if strings.TrimSpace(namespace) == "" {
-			resp.Error = map[string]any{"code": -32602, "message": "namespace is required"}
-			return resp
-		}
-		httpResp, err := http.Get(strings.TrimRight(cfg.API.BaseURL, "/") + "/v1/sync/status?namespace=" + namespace)
+		result, err := callTool(cfg, params)
 		if err != nil {
-			resp.Error = map[string]any{"code": -32000, "message": err.Error()}
+			resp.Error = err
 			return resp
 		}
-		defer httpResp.Body.Close()
-		var payload apiEnvelope
-		if err := json.NewDecoder(httpResp.Body).Decode(&payload); err != nil {
-			resp.Error = map[string]any{"code": -32000, "message": err.Error()}
-			return resp
-		}
-		if httpResp.StatusCode >= http.StatusBadRequest || !payload.OK {
-			message := "request failed"
-			if payload.Error != nil && strings.TrimSpace(payload.Error.Message) != "" {
-				message = payload.Error.Message
-			}
-			resp.Error = map[string]any{"code": -32000, "message": message}
-			return resp
-		}
-		var data map[string]any
-		if len(payload.Data) > 0 {
-			if err := json.Unmarshal(payload.Data, &data); err != nil {
-				resp.Error = map[string]any{"code": -32000, "message": err.Error()}
-				return resp
-			}
-		} else {
-			data = map[string]any{}
-		}
-		text, _ := json.Marshal(data)
-		resp.Result = map[string]any{
-			"structuredContent": map[string]any{
-				"ok":         true,
-				"data":       data,
-				"warnings":   payload.Warnings,
-				"request_id": payload.RequestID,
-			},
-			"content": []map[string]any{
-				{"type": "text", "text": string(text)},
-			},
-		}
+		resp.Result = result
 	default:
 		resp.Error = map[string]any{"code": -32601, "message": "method not found"}
 	}
 	return resp
+}
+
+func toolDefinitions() []map[string]any {
+	return []map[string]any{
+		{
+			"name":        "memory.store",
+			"description": "append a local memory via memoryd HTTP",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"memory_id":       map[string]any{"type": "string"},
+					"visibility":      map[string]any{"type": "string"},
+					"namespace":       map[string]any{"type": "string"},
+					"memory_type":     map[string]any{"type": "string"},
+					"scope":           map[string]any{"type": "string"},
+					"subject":         map[string]any{"type": "string"},
+					"body":            map[string]any{"type": "string"},
+					"source_uri":      map[string]any{"type": "string"},
+					"source_hash":     map[string]any{"type": "string"},
+					"author_agent_id": map[string]any{"type": "string"},
+					"origin_peer_id":  map[string]any{"type": "string"},
+					"authored_at_ms":  map[string]any{"type": "integer"},
+				},
+				"required": []string{"visibility", "namespace", "body"},
+			},
+		},
+		{
+			"name":        "memory.recall",
+			"description": "query local memory via memoryd HTTP",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query":           map[string]any{"type": "string"},
+					"namespace":       map[string]any{"type": "string"},
+					"namespaces":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"top_k":           map[string]any{"type": "integer"},
+					"include_private": map[string]any{"type": "boolean"},
+					"limit":           map[string]any{"type": "integer"},
+				},
+				"required": []string{"query"},
+			},
+		},
+		{
+			"name":        "memory.sync_status",
+			"description": "return local sync health without mutating state",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"namespace": map[string]any{"type": "string"},
+				},
+				"required": []string{"namespace"},
+			},
+		},
+	}
+}
+
+func callTool(cfg config.Config, params toolCallParams) (any, map[string]any) {
+	switch params.Name {
+	case "memory.sync_status":
+		var args struct {
+			Namespace string `json:"namespace"`
+		}
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if strings.TrimSpace(args.Namespace) == "" {
+			return nil, map[string]any{"code": -32602, "message": "namespace is required"}
+		}
+		payload, err := callAPI(cfg, http.MethodGet, "/v1/sync/status", url.Values{"namespace": []string{args.Namespace}}, nil)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	case "memory.store":
+		var args storeToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if strings.TrimSpace(args.Visibility) == "" {
+			return nil, map[string]any{"code": -32602, "message": "visibility is required"}
+		}
+		if strings.TrimSpace(args.Namespace) == "" {
+			return nil, map[string]any{"code": -32602, "message": "namespace is required"}
+		}
+		if strings.TrimSpace(args.Body) == "" {
+			return nil, map[string]any{"code": -32602, "message": "body is required"}
+		}
+		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/store", nil, args)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	case "memory.recall":
+		var args recallToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if strings.TrimSpace(args.Query) == "" {
+			return nil, map[string]any{"code": -32602, "message": "query is required"}
+		}
+		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/recall", nil, args)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	default:
+		return nil, map[string]any{"code": -32601, "message": "unknown tool"}
+	}
+}
+
+func decodeArguments(arguments map[string]any, dst any) error {
+	raw, err := json.Marshal(arguments)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, dst)
+}
+
+func callAPI(cfg config.Config, method, path string, query url.Values, body any) (apiEnvelope, error) {
+	var payload apiEnvelope
+	base := strings.TrimRight(cfg.API.BaseURL, "/")
+	fullURL := base + path
+	if len(query) > 0 {
+		fullURL += "?" + query.Encode()
+	}
+
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return apiEnvelope{}, err
+		}
+		reader = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), method, fullURL, reader)
+	if err != nil {
+		return apiEnvelope{}, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := apiClient.Do(req)
+	if err != nil {
+		return apiEnvelope{}, err
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return apiEnvelope{}, err
+	}
+	if resp.StatusCode >= http.StatusBadRequest || !payload.OK {
+		return payload, fmt.Errorf("request failed")
+	}
+	return payload, nil
+}
+
+func toolResultFromEnvelope(payload apiEnvelope) map[string]any {
+	data := payload.Data
+	if data == nil {
+		data = map[string]any{}
+	}
+	text, _ := json.Marshal(data)
+	return map[string]any{
+		"structuredContent": map[string]any{
+			"ok":         true,
+			"data":       data,
+			"warnings":   payload.Warnings,
+			"request_id": payload.RequestID,
+		},
+		"content": []map[string]any{
+			{"type": "text", "text": string(text)},
+		},
+	}
+}
+
+func rpcErrorFromEnvelope(payload apiEnvelope, err error) map[string]any {
+	message := err.Error()
+	if payload.Error != nil && strings.TrimSpace(payload.Error.Message) != "" {
+		message = payload.Error.Message
+	}
+	out := map[string]any{
+		"code":    -32000,
+		"message": message,
+	}
+	details := map[string]any{}
+	if payload.RequestID != "" {
+		details["request_id"] = payload.RequestID
+	}
+	if len(payload.Warnings) > 0 {
+		details["warnings"] = payload.Warnings
+	}
+	if payload.Error != nil {
+		details["api_code"] = payload.Error.Code
+		details["retryable"] = payload.Error.Retryable
+		details["details"] = payload.Error.Details
+	}
+	if len(details) > 0 {
+		out["data"] = details
+	}
+	return out
 }
 
 func readMessage(r *bufio.Reader) ([]byte, error) {
