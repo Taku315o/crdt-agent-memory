@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 
+	"crdt-agent-memory/internal/signing"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -46,6 +48,7 @@ type Sync struct {
 type PeerRegistryEntry struct {
 	PeerID             string   `yaml:"peer_id"`
 	DisplayName        string   `yaml:"display_name"`
+	SigningPublicKey   string   `yaml:"signing_public_key"`
 	NamespaceAllowlist []string `yaml:"namespace_allowlist"`
 	DiscoveryProfile   string   `yaml:"discovery_profile"`
 	RelayProfile       string   `yaml:"relay_profile"`
@@ -87,6 +90,9 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.DatabasePath) == "" {
 		return errors.New("database_path is required")
 	}
+	if strings.TrimSpace(c.SigningKeyPath) == "" {
+		return errors.New("signing_key_path is required")
+	}
 	if strings.TrimSpace(c.Extensions.CRSQLitePath) == "" {
 		return errors.New("extensions.crsqlite_path is required")
 	}
@@ -105,6 +111,12 @@ func (c Config) Validate() error {
 	for _, peer := range c.PeerRegistry {
 		if strings.TrimSpace(peer.PeerID) == "" {
 			return errors.New("peer_registry.peer_id is required")
+		}
+		if strings.TrimSpace(peer.SigningPublicKey) == "" {
+			return errors.New("peer_registry.signing_public_key is required")
+		}
+		if _, err := signing.ParsePublicKeyHex(peer.SigningPublicKey); err != nil {
+			return err
 		}
 		if strings.TrimSpace(peer.SyncURL) == "" {
 			return errors.New("peer_registry.sync_url is required")

@@ -7,6 +7,15 @@ const (
 	VisibilityPrivate Visibility = "private"
 )
 
+type SignatureStatus string
+
+const (
+	SignatureStatusValid            SignatureStatus = "valid"
+	SignatureStatusMissingSignature SignatureStatus = "missing_signature"
+	SignatureStatusInvalidSignature SignatureStatus = "invalid_signature"
+	SignatureStatusUnknownPeer      SignatureStatus = "unknown_peer"
+)
+
 type StoreRequest struct {
 	MemoryID      string     `json:"memory_id,omitempty"`
 	Visibility    Visibility `json:"visibility"`

@@ -7,12 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
+	"crdt-agent-memory/internal/memory"
 	"crdt-agent-memory/internal/policy"
+	"crdt-agent-memory/internal/signing"
 	"crdt-agent-memory/internal/storage"
 )
 
@@ -166,6 +170,11 @@ func (s *Service) ApplyBatch(ctx context.Context, fromPeerID string, batch Batch
 	if batch.SchemaHash != s.meta.SchemaHash || batch.CRRManifestHash != s.meta.CRRManifestHash {
 		return s.quarantineBatch(ctx, fromPeerID, batch, "incompatible batch metadata")
 	}
+	verificationResults, err := s.evaluateBatchVerification(ctx, batch)
+	if err != nil {
+		return s.quarantineBatch(ctx, fromPeerID, batch, err.Error())
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -192,6 +201,11 @@ func (s *Service) ApplyBatch(ctx context.Context, fromPeerID string, batch Batch
 			if !strings.Contains(strings.ToLower(err.Error()), "unique") && !strings.Contains(strings.ToLower(err.Error()), "constraint") {
 				return err
 			}
+		}
+	}
+	for _, verification := range verificationResults {
+		if err := upsertVerificationStateTX(ctx, tx, "shared", verification.MemoryID, verification.Status, verification.Detail); err != nil {
+			return err
 		}
 	}
 
@@ -342,6 +356,205 @@ func (s *Service) quarantineBatch(ctx context.Context, fromPeerID string, batch 
 	return errors.New(reason)
 }
 
+type verificationResult struct {
+	MemoryID string
+	Status   memory.SignatureStatus
+	Detail   string
+}
+
+type sharedMemoryCandidate struct {
+	Claim     signing.ClaimPayload
+	Signature []byte
+}
+
+func (s *Service) evaluateBatchVerification(ctx context.Context, batch Batch) ([]verificationResult, error) {
+	candidates := map[string]*sharedMemoryCandidate{}
+	order := []string{}
+	for _, change := range batch.Changes {
+		if change.Table != "memory_nodes" {
+			continue
+		}
+		memoryID := decodePrimaryKeyText(change.PKB64)
+		if strings.TrimSpace(memoryID) == "" {
+			continue
+		}
+		candidate, ok := candidates[memoryID]
+		if !ok {
+			loaded, err := s.loadSharedMemoryCandidate(ctx, memoryID)
+			if err != nil {
+				return nil, err
+			}
+			loaded.Claim.MemoryID = memoryID
+			loaded.Claim.PayloadVersion = signing.PayloadVersion
+			candidate = &loaded
+			candidates[memoryID] = candidate
+			order = append(order, memoryID)
+		}
+		if err := applyMemoryNodeChange(candidate, change); err != nil {
+			return nil, err
+		}
+	}
+
+	results := make([]verificationResult, 0, len(order))
+	for _, memoryID := range order {
+		candidate := candidates[memoryID]
+		if len(candidate.Signature) == 0 {
+			results = append(results, verificationResult{
+				MemoryID: memoryID,
+				Status:   memory.SignatureStatusMissingSignature,
+			})
+			continue
+		}
+		publicKeyHex, err := s.lookupSigningPublicKey(ctx, candidate.Claim.OriginPeerID)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(publicKeyHex) == "" {
+			return nil, fmt.Errorf("unknown peer signing key for %s", candidate.Claim.MemoryID)
+		}
+		if err := signing.VerifyClaim(candidate.Claim, candidate.Signature, publicKeyHex); err != nil {
+			return nil, fmt.Errorf("invalid signature for %s: %w", candidate.Claim.MemoryID, err)
+		}
+		results = append(results, verificationResult{
+			MemoryID: memoryID,
+			Status:   memory.SignatureStatusValid,
+		})
+	}
+	return results, nil
+}
+
+func decodePrimaryKeyText(encoded string) string {
+	pk, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return ""
+	}
+	decoded := string(pk)
+	for idx, r := range decoded {
+		if ('0' <= r && r <= '9') || ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z') {
+			return decoded[idx:]
+		}
+	}
+	return decoded
+}
+
+func (s *Service) loadSharedMemoryCandidate(ctx context.Context, memoryID string) (sharedMemoryCandidate, error) {
+	var candidate sharedMemoryCandidate
+	err := s.db.QueryRowContext(ctx, `
+		SELECT
+			memory_id,
+			memory_type,
+			namespace,
+			subject,
+			body,
+			source_uri,
+			source_hash,
+			author_agent_id,
+			origin_peer_id,
+			authored_at_ms,
+			valid_from_ms,
+			valid_to_ms,
+			author_signature
+		FROM memory_nodes
+		WHERE memory_id = ?
+	`, memoryID).Scan(
+		&candidate.Claim.MemoryID,
+		&candidate.Claim.MemoryType,
+		&candidate.Claim.Namespace,
+		&candidate.Claim.Subject,
+		&candidate.Claim.Body,
+		&candidate.Claim.SourceURI,
+		&candidate.Claim.SourceHash,
+		&candidate.Claim.AuthorAgentID,
+		&candidate.Claim.OriginPeerID,
+		&candidate.Claim.AuthoredAtMS,
+		&candidate.Claim.ValidFromMS,
+		&candidate.Claim.ValidToMS,
+		&candidate.Signature,
+	)
+	if err == sql.ErrNoRows {
+		candidate.Claim.PayloadVersion = signing.PayloadVersion
+		return candidate, nil
+	}
+	if err != nil {
+		return sharedMemoryCandidate{}, err
+	}
+	candidate.Claim.PayloadVersion = signing.PayloadVersion
+	return candidate, nil
+}
+
+func applyMemoryNodeChange(candidate *sharedMemoryCandidate, change Change) error {
+	switch change.CID {
+	case "memory_id":
+		candidate.Claim.MemoryID = valueAsString(change.Val)
+	case "memory_type":
+		candidate.Claim.MemoryType = valueAsString(change.Val)
+	case "namespace":
+		candidate.Claim.Namespace = valueAsString(change.Val)
+	case "subject":
+		candidate.Claim.Subject = valueAsString(change.Val)
+	case "body":
+		candidate.Claim.Body = valueAsString(change.Val)
+	case "source_uri":
+		candidate.Claim.SourceURI = valueAsString(change.Val)
+	case "source_hash":
+		candidate.Claim.SourceHash = valueAsString(change.Val)
+	case "author_agent_id":
+		candidate.Claim.AuthorAgentID = valueAsString(change.Val)
+	case "origin_peer_id":
+		candidate.Claim.OriginPeerID = valueAsString(change.Val)
+	case "authored_at_ms":
+		value, err := valueAsInt64(change.Val)
+		if err != nil {
+			return err
+		}
+		candidate.Claim.AuthoredAtMS = value
+	case "valid_from_ms":
+		value, err := valueAsInt64(change.Val)
+		if err != nil {
+			return err
+		}
+		candidate.Claim.ValidFromMS = value
+	case "valid_to_ms":
+		value, err := valueAsInt64(change.Val)
+		if err != nil {
+			return err
+		}
+		candidate.Claim.ValidToMS = value
+	case "author_signature":
+		value, err := valueAsBytes(change.Val)
+		if err != nil {
+			return err
+		}
+		candidate.Signature = value
+	}
+	return nil
+}
+
+func (s *Service) lookupSigningPublicKey(ctx context.Context, peerID string) (string, error) {
+	var publicKeyHex string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT signing_public_key
+		FROM peer_policies
+		WHERE peer_id = ?
+	`, peerID).Scan(&publicKeyHex)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return publicKeyHex, err
+}
+
+func upsertVerificationStateTX(ctx context.Context, tx *sql.Tx, memorySpace, memoryID string, status memory.SignatureStatus, detail string) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO memory_verification_state(memory_space, memory_id, signature_status, detail, checked_at_ms)
+		VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(memory_space, memory_id) DO UPDATE SET
+			signature_status = excluded.signature_status,
+			detail = excluded.detail,
+			checked_at_ms = excluded.checked_at_ms
+	`, memorySpace, memoryID, status, detail, time.Now().UnixMilli())
+	return err
+}
+
 func (s *Service) markSyncError(ctx context.Context, peerID, namespace, msg string, schemaFenced bool) error {
 	fenced := 0
 	if schemaFenced {
@@ -375,6 +588,10 @@ func encodeValue(raw []byte) Value {
 		text := ""
 		return Value{Text: &text}
 	}
+	if !utf8.Valid(raw) {
+		blobB64 := base64.StdEncoding.EncodeToString(raw)
+		return Value{BlobB64: &blobB64}
+	}
 	if json.Valid(raw) {
 		text := string(raw)
 		return Value{Text: &text}
@@ -397,5 +614,52 @@ func decodeValue(v Value) (any, error) {
 		return base64.StdEncoding.DecodeString(*v.BlobB64)
 	default:
 		return nil, nil
+	}
+}
+
+func valueAsString(v Value) string {
+	switch {
+	case v.Null:
+		return ""
+	case v.Text != nil:
+		return *v.Text
+	case v.Integer != nil:
+		return strconv.FormatInt(*v.Integer, 10)
+	case v.Float != nil:
+		return strconv.FormatFloat(*v.Float, 'f', -1, 64)
+	case v.BlobB64 != nil:
+		decoded, err := base64.StdEncoding.DecodeString(*v.BlobB64)
+		if err != nil {
+			return ""
+		}
+		return string(decoded)
+	default:
+		return ""
+	}
+}
+
+func valueAsInt64(v Value) (int64, error) {
+	switch {
+	case v.Null:
+		return 0, nil
+	case v.Integer != nil:
+		return *v.Integer, nil
+	case v.Text != nil:
+		return strconv.ParseInt(*v.Text, 10, 64)
+	default:
+		return 0, fmt.Errorf("unsupported integer value")
+	}
+}
+
+func valueAsBytes(v Value) ([]byte, error) {
+	switch {
+	case v.Null:
+		return nil, nil
+	case v.BlobB64 != nil:
+		return base64.StdEncoding.DecodeString(*v.BlobB64)
+	case v.Text != nil:
+		return []byte(*v.Text), nil
+	default:
+		return nil, fmt.Errorf("unsupported blob value")
 	}
 }

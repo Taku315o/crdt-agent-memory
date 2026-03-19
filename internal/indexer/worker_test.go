@@ -39,7 +39,7 @@ func newIndexFixture(t *testing.T) *indexFixture {
 	return &indexFixture{
 		db:     db,
 		worker: NewWorker(db, time.Second),
-		memory: memory.NewService(db),
+		memory: memory.NewService(db, testenv.SignerForPeer(t, "peer-a")),
 	}
 }
 

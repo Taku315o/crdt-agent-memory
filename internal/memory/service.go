@@ -9,14 +9,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"crdt-agent-memory/internal/signing"
 )
 
 type Service struct {
-	db *sql.DB
+	db     *sql.DB
+	signer signing.Signer
 }
 
-func NewService(db *sql.DB) *Service {
-	return &Service{db: db}
+func NewService(db *sql.DB, signer signing.Signer) *Service {
+	return &Service{db: db, signer: signer}
 }
 
 func (s *Service) Store(ctx context.Context, req StoreRequest) (string, error) {
@@ -47,6 +50,10 @@ func (s *Service) Store(ctx context.Context, req StoreRequest) (string, error) {
 	if req.OriginPeerID == "" {
 		req.OriginPeerID = "peer/local"
 	}
+	signature, err := s.sign(req)
+	if err != nil {
+		return "", err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -61,20 +68,23 @@ func (s *Service) Store(ctx context.Context, req StoreRequest) (string, error) {
 				memory_id, memory_type, namespace, scope, subject, body, source_uri, source_hash,
 				author_agent_id, origin_peer_id, authored_at_ms, valid_from_ms, valid_to_ms,
 				lifecycle_state, schema_version, author_signature
-			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'active', 1, X'')
+			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'active', 1, ?)
 		`, req.MemoryID, req.MemoryType, req.Namespace, req.Scope, req.Subject, req.Body, req.SourceURI,
-			req.SourceHash, req.AuthorAgentID, req.OriginPeerID, req.AuthoredAtMS)
+			req.SourceHash, req.AuthorAgentID, req.OriginPeerID, req.AuthoredAtMS, signature)
 	case VisibilityPrivate:
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO private_memory_nodes(
 				memory_id, local_namespace, memory_type, subject, body, source_uri, source_hash,
 				author_agent_id, origin_peer_id, authored_at_ms, valid_from_ms, valid_to_ms,
 				lifecycle_state, schema_version, author_signature
-			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'active', 1, X'')
+			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'active', 1, ?)
 		`, req.MemoryID, req.Namespace, req.MemoryType, req.Subject, req.Body, req.SourceURI,
-			req.SourceHash, req.AuthorAgentID, req.OriginPeerID, req.AuthoredAtMS)
+			req.SourceHash, req.AuthorAgentID, req.OriginPeerID, req.AuthoredAtMS, signature)
 	}
 	if err != nil {
+		return "", err
+	}
+	if err := upsertVerificationState(ctx, tx, string(req.Visibility), req.MemoryID, SignatureStatusValid, ""); err != nil {
 		return "", err
 	}
 
@@ -128,9 +138,19 @@ func (s *Service) Recall(ctx context.Context, req RecallRequest) ([]RecallResult
 		JOIN memory_fts f
 		  ON f.memory_space = v.memory_space
 		 AND f.memory_id = v.memory_id
+		LEFT JOIN memory_verification_state vs
+		  ON vs.memory_space = v.memory_space
+		 AND vs.memory_id = v.memory_id
+		LEFT JOIN memory_nodes mn
+		  ON v.memory_space = 'shared'
+		 AND mn.memory_id = v.memory_id
+		LEFT JOIN peer_policies pp
+		  ON v.memory_space = 'shared'
+		 AND pp.peer_id = v.origin_peer_id
 		WHERE memory_fts MATCH ?
+		  AND COALESCE(vs.signature_status, '') != ?
 	`
-	args := []any{req.Query}
+	args := []any{req.Query, SignatureStatusInvalidSignature}
 
 	if !req.IncludePrivate {
 		query += ` AND v.memory_space = 'shared'`
@@ -143,7 +163,21 @@ func (s *Service) Recall(ctx context.Context, req RecallRequest) ([]RecallResult
 		}
 		query += fmt.Sprintf(" AND v.namespace IN (%s)", strings.Join(placeholders, ","))
 	}
-	query += ` ORDER BY bm25(memory_fts), v.authored_at_ms DESC LIMIT ?`
+	query += `
+		ORDER BY
+			CASE
+				WHEN v.memory_space = 'private' THEN 0
+				WHEN COALESCE(vs.signature_status, '') = 'valid' THEN 0
+				WHEN COALESCE(vs.signature_status, '') = 'missing_signature'
+					OR length(COALESCE(mn.author_signature, X'')) = 0 THEN 1
+				WHEN COALESCE(vs.signature_status, '') = 'unknown_peer' THEN 2
+				ELSE 1
+			END,
+			COALESCE(pp.trust_weight, 1.0) DESC,
+			bm25(memory_fts),
+			v.authored_at_ms DESC
+		LIMIT ?
+	`
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -202,4 +236,39 @@ func (s *Service) Supersede(ctx context.Context, oldMemoryID string, req StoreRe
 		return "", err
 	}
 	return newID, tx.Commit()
+}
+
+func (s *Service) sign(req StoreRequest) ([]byte, error) {
+	if s.signer == nil {
+		return nil, errors.New("signer is required")
+	}
+	return s.signer.SignClaim(signing.ClaimPayload{
+		MemoryID:       req.MemoryID,
+		MemoryType:     req.MemoryType,
+		Namespace:      req.Namespace,
+		Subject:        req.Subject,
+		Body:           req.Body,
+		SourceURI:      req.SourceURI,
+		SourceHash:     req.SourceHash,
+		AuthorAgentID:  req.AuthorAgentID,
+		OriginPeerID:   req.OriginPeerID,
+		AuthoredAtMS:   req.AuthoredAtMS,
+		ValidFromMS:    0,
+		ValidToMS:      0,
+		PayloadVersion: signing.PayloadVersion,
+	})
+}
+
+func upsertVerificationState(ctx context.Context, exec interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, memorySpace, memoryID string, status SignatureStatus, detail string) error {
+	_, err := exec.ExecContext(ctx, `
+		INSERT INTO memory_verification_state(memory_space, memory_id, signature_status, detail, checked_at_ms)
+		VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(memory_space, memory_id) DO UPDATE SET
+			signature_status = excluded.signature_status,
+			detail = excluded.detail,
+			checked_at_ms = excluded.checked_at_ms
+	`, memorySpace, memoryID, status, detail, time.Now().UnixMilli())
+	return err
 }

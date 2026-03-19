@@ -29,13 +29,13 @@ func setupSyncService(t *testing.T, name string) (*memory.Service, *Service) {
 		t.Fatal(err)
 	}
 	policies := policy.NewRepository(db)
-	if err := policies.AllowPeer(ctx, "peer-a", "peer-a"); err != nil {
+	if err := policies.AllowPeer(ctx, "peer-a", "peer-a", testenv.PublicKeyHexForPeer("peer-a")); err != nil {
 		t.Fatal(err)
 	}
-	if err := policies.AllowPeer(ctx, "peer-b", "peer-b"); err != nil {
+	if err := policies.AllowPeer(ctx, "peer-b", "peer-b", testenv.PublicKeyHexForPeer("peer-b")); err != nil {
 		t.Fatal(err)
 	}
-	return memory.NewService(db), NewService(db, meta, policies, name, TransportHTTPDev)
+	return memory.NewService(db, testenv.SignerForPeer(t, name)), NewService(db, meta, policies, name, TransportHTTPDev)
 }
 
 func TestHandshakeRejectsSchemaMismatch(t *testing.T) {
@@ -170,5 +170,112 @@ func TestSyncStatusReflectsFence(t *testing.T) {
 	}
 	if status.State != "schema_fenced" {
 		t.Fatalf("state = %q, want schema_fenced", status.State)
+	}
+}
+
+func TestMissingSignatureBatchMarksVerificationState(t *testing.T) {
+	ctx := context.Background()
+	leftMem, leftSync := setupSyncService(t, "peer-a")
+	_, rightSync := setupSyncService(t, "peer-b")
+
+	memoryID, err := leftMem.Store(ctx, memory.StoreRequest{
+		Visibility:    memory.VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "shared replicated body",
+		Subject:       "replicated",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := leftSync.db.ExecContext(ctx, `UPDATE memory_nodes SET author_signature = X'' WHERE memory_id = ?`, memoryID); err != nil {
+		t.Fatal(err)
+	}
+
+	batch, err := leftSync.ExtractBatch(ctx, "peer-b", "team/dev", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rightSync.ApplyBatch(ctx, "peer-a", batch); err != nil {
+		t.Fatal(err)
+	}
+
+	var status string
+	if err := rightSync.db.QueryRowContext(ctx, `
+		SELECT signature_status FROM memory_verification_state WHERE memory_space = 'shared' AND memory_id = ?
+	`, memoryID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(memory.SignatureStatusMissingSignature) {
+		t.Fatalf("signature_status = %q, want missing_signature", status)
+	}
+}
+
+func TestInvalidSignatureBatchIsQuarantined(t *testing.T) {
+	ctx := context.Background()
+	leftMem, leftSync := setupSyncService(t, "peer-a")
+	_, rightSync := setupSyncService(t, "peer-b")
+
+	memoryID, err := leftMem.Store(ctx, memory.StoreRequest{
+		Visibility:    memory.VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "shared replicated body",
+		Subject:       "replicated",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := leftSync.db.ExecContext(ctx, `UPDATE memory_nodes SET author_signature = X'01' WHERE memory_id = ?`, memoryID); err != nil {
+		t.Fatal(err)
+	}
+
+	batch, err := leftSync.ExtractBatch(ctx, "peer-b", "team/dev", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rightSync.ApplyBatch(ctx, "peer-a", batch); err == nil {
+		t.Fatal("expected invalid signature failure")
+	}
+	var count int
+	if err := rightSync.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_quarantine`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("quarantine count = %d, want 1", count)
+	}
+}
+
+func TestUnknownPeerBatchIsQuarantined(t *testing.T) {
+	ctx := context.Background()
+	leftMem, leftSync := setupSyncService(t, "peer-a")
+	_, rightSync := setupSyncService(t, "peer-b")
+
+	if _, err := leftMem.Store(ctx, memory.StoreRequest{
+		Visibility:    memory.VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "shared replicated body",
+		Subject:       "replicated",
+		OriginPeerID:  "peer-z",
+		AuthorAgentID: "agent-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	batch, err := leftSync.ExtractBatch(ctx, "peer-b", "team/dev", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rightSync.ApplyBatch(ctx, "peer-a", batch); err == nil {
+		t.Fatal("expected unknown peer failure")
+	}
+	var count int
+	if err := rightSync.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_quarantine`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("quarantine count = %d, want 1", count)
 	}
 }

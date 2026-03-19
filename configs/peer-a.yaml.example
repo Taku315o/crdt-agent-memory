@@ -21,6 +21,7 @@ sync:
 peer_registry:
   - peer_id: "peer-b"
     display_name: "peer-b"
+    signing_public_key: "8fb9528d24f03b3f5384808d4708e2f42b7a017fb00d664ca06bd5ed0b4d8d8c"
     namespace_allowlist: ["team/dev"]
     discovery_profile: "http-dev"
     relay_profile: "none"

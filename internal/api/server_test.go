@@ -50,14 +50,14 @@ func newAPIFixture(t *testing.T) *apiFixture {
 		t.Fatal(err)
 	}
 	policies := policy.NewRepository(db)
-	if err := policies.AllowPeer(ctx, "peer-a", "peer-a"); err != nil {
+	if err := policies.AllowPeer(ctx, "peer-a", "peer-a", testenv.PublicKeyHexForPeer("peer-a")); err != nil {
 		t.Fatal(err)
 	}
-	if err := policies.AllowPeer(ctx, "peer-b", "peer-b"); err != nil {
+	if err := policies.AllowPeer(ctx, "peer-b", "peer-b", testenv.PublicKeyHexForPeer("peer-b")); err != nil {
 		t.Fatal(err)
 	}
 	syncSvc := memsync.NewService(db, meta, policies, "peer-a", memsync.TransportHTTPDev)
-	srv, err := New(ctx, db, meta, syncSvc)
+	srv, err := New(ctx, db, meta, syncSvc, testenv.SignerForPeer(t, "peer-a"), "peer-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,6 +134,15 @@ func TestMemoryStoreContract(t *testing.T) {
 	}
 	if !envelope.Data.SyncEligible {
 		t.Fatal("expected sync_eligible=true")
+	}
+	var signatureLen int
+	if err := fixture.db.QueryRowContext(context.Background(), `
+		SELECT length(author_signature) FROM memory_nodes WHERE memory_id = ?
+	`, envelope.Data.MemoryRef.MemoryID).Scan(&signatureLen); err != nil {
+		t.Fatal(err)
+	}
+	if signatureLen == 0 {
+		t.Fatal("expected non-empty author_signature")
 	}
 
 	resp, raw = doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/memory/store", StoreRequest{
@@ -282,6 +291,24 @@ func TestSyncStatusContract(t *testing.T) {
 	}
 	if envelope.Data.Peers[0].LastError != nil {
 		t.Fatalf("last_error = %v, want null", *envelope.Data.Peers[0].LastError)
+	}
+}
+
+func TestDiagIncludesTrustAndScrubberSummary(t *testing.T) {
+	fixture := newAPIFixture(t)
+	resp, raw := doJSON(t, fixture.server.Client(), http.MethodGet, fixture.server.URL+"/v1/diag", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := payload["trust_summary"]; !ok {
+		t.Fatal("expected trust_summary")
+	}
+	if _, ok := payload["scrubber_summary"]; !ok {
+		t.Fatal("expected scrubber_summary")
 	}
 }
 

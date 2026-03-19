@@ -10,13 +10,16 @@ import (
 
 	"crdt-agent-memory/internal/memory"
 	"crdt-agent-memory/internal/memsync"
+	"crdt-agent-memory/internal/scrubber"
+	"crdt-agent-memory/internal/signing"
 	"crdt-agent-memory/internal/storage"
 )
 
 type Server struct {
-	Memory *memory.Service
-	Sync   *memsync.Service
-	Meta   storage.Metadata
+	Memory   *memory.Service
+	Sync     *memsync.Service
+	Scrubber *scrubber.Service
+	Meta     storage.Metadata
 }
 
 func (s *Server) Handler() http.Handler {
@@ -40,7 +43,20 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	_ = json.NewEncoder(w).Encode(diag)
+	summary, err := s.Scrubber.Diagnose(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"schema_hash":       diag.SchemaHash,
+		"crr_manifest_hash": diag.CRRManifestHash,
+		"tracked_peers":     diag.TrackedPeers,
+		"peer_states":       diag.PeerStates,
+		"quarantine_count":  diag.QuarantineCount,
+		"trust_summary":     summary.TrustSummary,
+		"scrubber_summary":  summary.ScrubberSummary,
+	})
 }
 
 func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
@@ -145,11 +161,16 @@ func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 	s.writeOK(w, requestID, SyncStatusResponseFromService(status))
 }
 
-func New(ctx context.Context, db *sql.DB, meta storage.Metadata, sync *memsync.Service) (*Server, error) {
+func New(ctx context.Context, db *sql.DB, meta storage.Metadata, sync *memsync.Service, signer signing.Signer, selfPeerID string) (*Server, error) {
+	publicKeyHex := ""
+	if signer != nil {
+		publicKeyHex = signer.PublicKeyHex()
+	}
 	return &Server{
-		Memory: memory.NewService(db),
-		Sync:   sync,
-		Meta:   meta,
+		Memory:   memory.NewService(db, signer),
+		Sync:     sync,
+		Scrubber: scrubber.NewService(db, selfPeerID, publicKeyHex),
+		Meta:     meta,
 	}, nil
 }
 

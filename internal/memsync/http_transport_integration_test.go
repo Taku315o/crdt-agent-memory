@@ -45,7 +45,7 @@ func newSyncFixture(t *testing.T, peerID string, allowPeers []string, allowedNam
 
 	policies := policy.NewRepository(db)
 	for _, allowPeer := range allowPeers {
-		if err := policies.AllowPeer(ctx, allowPeer, allowPeer); err != nil {
+		if err := policies.AllowPeer(ctx, allowPeer, allowPeer, testenv.PublicKeyHexForPeer(allowPeer)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -53,7 +53,7 @@ func newSyncFixture(t *testing.T, peerID string, allowPeers []string, allowedNam
 	fixture := &syncFixture{
 		peerID: peerID,
 		db:     db,
-		mem:    memory.NewService(db),
+		mem:    memory.NewService(db, testenv.SignerForPeer(t, peerID)),
 		sync:   NewService(db, meta, policies, peerID, TransportHTTPDev),
 		meta:   meta,
 	}
