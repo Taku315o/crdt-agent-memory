@@ -62,7 +62,7 @@ func main() {
 		if err := policies.SyncRegistry(ctx, cfg.PeerRegistry); err != nil {
 			log.Fatal(err)
 		}
-		syncSvc := memsync.NewService(db, meta, policies, cfg.PeerID, "http-dev")
+		syncSvc := memsync.NewService(db, meta, policies, cfg.PeerID, memsync.TransportHTTPDev)
 		server, err := api.New(ctx, db, meta, syncSvc)
 		if err != nil {
 			log.Fatal(err)

@@ -35,7 +35,7 @@ func setupSyncService(t *testing.T, name string) (*memory.Service, *Service) {
 	if err := policies.AllowPeer(ctx, "peer-b", "peer-b"); err != nil {
 		t.Fatal(err)
 	}
-	return memory.NewService(db), NewService(db, meta, policies, name, "http-dev")
+	return memory.NewService(db), NewService(db, meta, policies, name, TransportHTTPDev)
 }
 
 func TestHandshakeRejectsSchemaMismatch(t *testing.T) {
