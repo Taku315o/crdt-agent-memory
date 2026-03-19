@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
@@ -13,9 +14,9 @@ import (
 )
 
 type Server struct {
-	Memory   *memory.Service
-	Sync     *memsync.Service
-	Meta     storage.Metadata
+	Memory *memory.Service
+	Sync   *memsync.Service
+	Meta   storage.Metadata
 }
 
 func (s *Server) Handler() http.Handler {
@@ -44,95 +45,104 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		s.writeError(w, http.StatusMethodNotAllowed, "", "METHOD_NOT_ALLOWED", "method not allowed", false, nil)
 		return
 	}
-	var req struct {
-		Visibility    memory.Visibility `json:"visibility"`
-		Namespace     string            `json:"namespace"`
-		MemoryType    string            `json:"memory_type"`
-		Scope         string            `json:"scope"`
-		Subject       string            `json:"subject"`
-		Body          string            `json:"body"`
-		SourceURI     string            `json:"source_uri"`
-		SourceHash    string            `json:"source_hash"`
-		AuthorAgentID string            `json:"author_agent_id"`
-		OriginPeerID  string            `json:"origin_peer_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	requestID := NewRequestID()
+	var req StoreRequest
+	if err := decodeRequest(r.Body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
 		return
 	}
-	id, err := s.Memory.Store(r.Context(), memory.StoreRequest{
-		Visibility:    req.Visibility,
-		Namespace:     req.Namespace,
-		MemoryType:    req.MemoryType,
-		Scope:         req.Scope,
-		Subject:       req.Subject,
-		Body:          req.Body,
-		SourceURI:     req.SourceURI,
-		SourceHash:    req.SourceHash,
-		AuthorAgentID: req.AuthorAgentID,
-		OriginPeerID:  req.OriginPeerID,
-	})
+	id, err := s.Memory.Store(r.Context(), req.ToMemoryRequest())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
 		return
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"memory_id": id})
+	s.writeOK(w, requestID, StoreResponse{
+		MemoryRef:    MemoryRefFromVisibility(req.Visibility, id),
+		Indexed:      false,
+		SyncEligible: req.Visibility == memory.VisibilityShared,
+	})
 }
 
 func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		s.writeError(w, http.StatusMethodNotAllowed, "", "METHOD_NOT_ALLOWED", "method not allowed", false, nil)
 		return
 	}
-	var req memory.RecallRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	requestID := NewRequestID()
+	var req RecallRequest
+	if err := decodeRequest(r.Body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
 		return
 	}
-	results, err := s.Memory.Recall(r.Context(), req)
+	namespaces := append([]string{}, req.Namespaces...)
+	if strings.TrimSpace(req.Namespace) != "" {
+		namespaces = append(namespaces, req.Namespace)
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = req.TopK
+	}
+	results, err := s.Memory.Recall(r.Context(), memory.RecallRequest{
+		Query:          req.Query,
+		Namespaces:     namespaces,
+		IncludePrivate: req.IncludePrivate,
+		Limit:          limit,
+	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
 		return
 	}
-	_ = json.NewEncoder(w).Encode(results)
+	items := make([]RecallItem, 0, len(results))
+	for _, item := range results {
+		items = append(items, RecallItemFromResult(item))
+	}
+	s.writeOK(w, requestID, RecallResponse{Items: items})
 }
 
 func (s *Server) handleSupersede(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		s.writeError(w, http.StatusMethodNotAllowed, "", "METHOD_NOT_ALLOWED", "method not allowed", false, nil)
 		return
 	}
-	var req struct {
-		OldMemoryID string              `json:"old_memory_id"`
-		Request     memory.StoreRequest `json:"request"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	requestID := NewRequestID()
+	var req SupersedeRequest
+	if err := decodeRequest(r.Body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
 		return
 	}
-	id, err := s.Memory.Supersede(r.Context(), req.OldMemoryID, req.Request)
+	oldID := req.OldID()
+	if strings.TrimSpace(oldID) == "" {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", "old_memory_id is required", false, nil)
+		return
+	}
+	id, err := s.Memory.Supersede(r.Context(), oldID, req.ToMemoryRequest())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
 		return
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"memory_id": id})
+	s.writeOK(w, requestID, SupersedeResponse{
+		OldMemoryRef:   MemoryRef{MemorySpace: "shared", MemoryID: oldID},
+		NewMemoryRef:   MemoryRef{MemorySpace: "shared", MemoryID: id},
+		LifecycleState: "superseded",
+	})
 }
 
 func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
+	requestID := NewRequestID()
 	namespace := strings.TrimSpace(r.URL.Query().Get("namespace"))
 	if namespace == "" {
-		http.Error(w, "namespace is required", http.StatusBadRequest)
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", "namespace is required", false, nil)
 		return
 	}
 	status, err := s.Sync.SyncStatus(r.Context(), namespace)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.writeError(w, http.StatusInternalServerError, requestID, "INTERNAL_ERROR", err.Error(), true, nil)
 		return
 	}
-	_ = json.NewEncoder(w).Encode(status)
+	s.writeOK(w, requestID, SyncStatusResponseFromService(status))
 }
 
 func New(ctx context.Context, db *sql.DB, meta storage.Metadata, sync *memsync.Service) (*Server, error) {
@@ -141,4 +151,27 @@ func New(ctx context.Context, db *sql.DB, meta storage.Metadata, sync *memsync.S
 		Sync:   sync,
 		Meta:   meta,
 	}, nil
+}
+
+func decodeRequest(body io.Reader, dst any) error {
+	dec := json.NewDecoder(body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) writeOK(w http.ResponseWriter, requestID string, data any) {
+	writeEnvelope(w, http.StatusOK, NewEnvelope(requestID, data))
+}
+
+func (s *Server) writeError(w http.ResponseWriter, status int, requestID, code, message string, retryable bool, details any) {
+	writeEnvelope(w, status, NewErrorEnvelope(requestID, code, message, retryable, details))
+}
+
+func writeEnvelope(w http.ResponseWriter, status int, payload Envelope) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
 }

@@ -171,7 +171,161 @@ curl 'http://127.0.0.1:3102/v1/sync/status?namespace=team/dev'
 - `schema_fenced=false`
 - peer A の `last_success_at_ms` が入る
 
-## 6. Diagnostics Checklist
+## 6. HTTP Contract
+
+`memoryd` の下記 4 エンドポイントは、成功時も失敗時も同じ envelope を返す。
+
+```json
+{
+  "ok": true,
+  "data": {},
+  "warnings": [],
+  "request_id": "req_..."
+}
+```
+
+error 時:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "body is required",
+    "retryable": false,
+    "details": null
+  },
+  "warnings": [],
+  "request_id": "req_..."
+}
+```
+
+### `POST /v1/memory/store`
+
+request:
+
+```json
+{
+  "visibility": "shared",
+  "namespace": "team/dev",
+  "body": "shared fact",
+  "subject": "shared"
+}
+```
+
+response `data`:
+
+```json
+{
+  "memory_ref": {
+    "memory_space": "shared",
+    "memory_id": "01H..."
+  },
+  "indexed": false,
+  "sync_eligible": true
+}
+```
+
+### `POST /v1/memory/recall`
+
+request:
+
+```json
+{
+  "query": "shared",
+  "namespaces": ["team/dev"],
+  "include_private": false,
+  "limit": 10
+}
+```
+
+response `data`:
+
+```json
+{
+  "items": [
+    {
+      "memory_ref": {
+        "memory_space": "shared",
+        "memory_id": "01H..."
+      },
+      "namespace": "team/dev",
+      "memory_type": "fact",
+      "subject": "shared",
+      "body": "shared fact",
+      "lifecycle_state": "active",
+      "authored_at_ms": 1741600000000,
+      "source_uri": "",
+      "source_hash": "",
+      "origin_peer_id": "peer-a"
+    }
+  ]
+}
+```
+
+### `POST /v1/memory/supersede`
+
+request:
+
+```json
+{
+  "old_memory_id": "01H...",
+  "request": {
+    "visibility": "shared",
+    "namespace": "team/dev",
+    "body": "updated fact"
+  }
+}
+```
+
+response `data`:
+
+```json
+{
+  "old_memory_ref": {
+    "memory_space": "shared",
+    "memory_id": "01H..."
+  },
+  "new_memory_ref": {
+    "memory_space": "shared",
+    "memory_id": "01J..."
+  },
+  "lifecycle_state": "superseded"
+}
+```
+
+### `GET /v1/sync/status?namespace=...`
+
+response `data`:
+
+```json
+{
+  "namespace": "team/dev",
+  "state": "healthy",
+  "schema_fenced": false,
+  "peers": [
+    {
+      "peer_id": "peer-b",
+      "namespace": "team/dev",
+      "last_seen_at_ms": 1741600000000,
+      "last_transport": "http-dev",
+      "last_path_type": "direct",
+      "last_error": null,
+      "last_success_at_ms": 1741600000000,
+      "schema_fenced": false
+    }
+  ]
+}
+```
+
+Notes:
+
+- `request_id` is now part of the contract for future MCP bridge reuse
+- `warnings` is always returned, even when empty
+- `/v1/sync/status` and `memory.sync_status` now share the same `data` shape
+- `last_error` is `null` when unset
+
+## 7. Diagnostics Checklist
 
 問題が起きたら、まず次を見る。
 
@@ -196,9 +350,10 @@ select count(*) from sync_quarantine;
 select count(*) from index_queue where processed_at_ms = 0;
 ```
 
-## 7. MCP Verification
+## 8. MCP Verification
 
 `memory-mcp` は現時点で `memory.sync_status` のみ実装済み。
+bridge は `/v1/sync/status` の `data` / `warnings` / `request_id` をそのまま tool response に流す。
 
 手動で呼ぶ場合は、MCP stdio framing を使う。
 

@@ -30,6 +30,21 @@ type rpcResponse struct {
 	Error   any    `json:"error,omitempty"`
 }
 
+type apiEnvelope struct {
+	OK        bool            `json:"ok"`
+	Data      json.RawMessage `json:"data,omitempty"`
+	Error     *apiError       `json:"error,omitempty"`
+	Warnings  []string        `json:"warnings"`
+	RequestID string          `json:"request_id"`
+}
+
+type apiError struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable bool   `json:"retryable"`
+	Details   any    `json:"details,omitempty"`
+}
+
 func main() {
 	var configPath string
 	flag.StringVar(&configPath, "config", "", "path to config yaml")
@@ -118,17 +133,35 @@ func handle(cfg config.Config, req rpcRequest) rpcResponse {
 			return resp
 		}
 		defer httpResp.Body.Close()
-		var payload map[string]any
+		var payload apiEnvelope
 		if err := json.NewDecoder(httpResp.Body).Decode(&payload); err != nil {
 			resp.Error = map[string]any{"code": -32000, "message": err.Error()}
 			return resp
 		}
-		text, _ := json.Marshal(payload)
+		if httpResp.StatusCode >= http.StatusBadRequest || !payload.OK {
+			message := "request failed"
+			if payload.Error != nil && strings.TrimSpace(payload.Error.Message) != "" {
+				message = payload.Error.Message
+			}
+			resp.Error = map[string]any{"code": -32000, "message": message}
+			return resp
+		}
+		var data map[string]any
+		if len(payload.Data) > 0 {
+			if err := json.Unmarshal(payload.Data, &data); err != nil {
+				resp.Error = map[string]any{"code": -32000, "message": err.Error()}
+				return resp
+			}
+		} else {
+			data = map[string]any{}
+		}
+		text, _ := json.Marshal(data)
 		resp.Result = map[string]any{
 			"structuredContent": map[string]any{
-				"ok":       true,
-				"data":     payload,
-				"warnings": []any{},
+				"ok":         true,
+				"data":       data,
+				"warnings":   payload.Warnings,
+				"request_id": payload.RequestID,
 			},
 			"content": []map[string]any{
 				{"type": "text", "text": string(text)},
