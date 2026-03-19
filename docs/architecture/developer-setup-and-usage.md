@@ -171,6 +171,22 @@ curl 'http://127.0.0.1:3102/v1/sync/status?namespace=team/dev'
 - `schema_fenced=false`
 - peer A の `last_success_at_ms` が入る
 
+index backlog を直接見るには `indexd` の診断出力を使う。
+
+```bash
+PATH=/opt/homebrew/bin:$PATH /opt/homebrew/bin/go run -tags sqlite_fts5 ./cmd/indexd \
+  --config /tmp/crdt-agent-memory-dev/peer-a/config.yaml \
+  --diag
+```
+
+返る JSON には次が入る。
+
+- `processed_count`
+- `pending_count`
+- `embedding_count`
+- `oldest_pending_enqueued_at_ms`
+- `oldest_pending_age_ms`
+
 ## 6. HTTP Contract
 
 `memoryd` の下記 4 エンドポイントは、成功時も失敗時も同じ envelope を返す。
@@ -338,6 +354,7 @@ Notes:
 - `peer_sync_state.last_error`
 - `sync_quarantine`
 - `index_queue.processed_at_ms`
+- `indexd --diag` の `pending_count` と `oldest_pending_age_ms`
 
 便利な SQL:
 

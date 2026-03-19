@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 )
 
@@ -21,12 +23,22 @@ func NewWorker(db *sql.DB, interval time.Duration) *Worker {
 	return &Worker{db: db, interval: interval}
 }
 
+type Diagnostics struct {
+	ProcessedCount            int64 `json:"processed_count"`
+	PendingCount              int64 `json:"pending_count"`
+	EmbeddingCount            int64 `json:"embedding_count"`
+	OldestPendingEnqueuedAtMS int64 `json:"oldest_pending_enqueued_at_ms"`
+	OldestPendingAgeMS        int64 `json:"oldest_pending_age_ms"`
+}
+
 func (w *Worker) Run(ctx context.Context) error {
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 	for {
 		if err := w.ProcessOnce(ctx); err != nil {
-			return err
+			// Keep the daemon alive; item-level errors are retried on the next tick.
+			// The caller can inspect diagnostics or logs for backlog.
+			_ = err
 		}
 		select {
 		case <-ctx.Done():
@@ -37,73 +49,141 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 func (w *Worker) ProcessOnce(ctx context.Context) error {
+	items, err := w.pendingItems(ctx, 128)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, it := range items {
+		if err := w.processItem(ctx, it); err != nil {
+			errs = append(errs, fmt.Errorf("%s/%s: %w", it.memorySpace, it.memoryID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (w *Worker) Diagnostics(ctx context.Context) (Diagnostics, error) {
+	var diag Diagnostics
+	if err := w.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM index_queue WHERE processed_at_ms > 0
+	`).Scan(&diag.ProcessedCount); err != nil {
+		return Diagnostics{}, err
+	}
+	if err := w.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM index_queue WHERE processed_at_ms = 0
+	`).Scan(&diag.PendingCount); err != nil {
+		return Diagnostics{}, err
+	}
+	if err := w.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM memory_embeddings
+	`).Scan(&diag.EmbeddingCount); err != nil {
+		return Diagnostics{}, err
+	}
+	var oldest sql.NullInt64
+	if err := w.db.QueryRowContext(ctx, `
+		SELECT MIN(enqueued_at_ms) FROM index_queue WHERE processed_at_ms = 0
+	`).Scan(&oldest); err != nil {
+		return Diagnostics{}, err
+	}
+	if oldest.Valid {
+		diag.OldestPendingEnqueuedAtMS = oldest.Int64
+		diag.OldestPendingAgeMS = time.Now().UnixMilli() - oldest.Int64
+	}
+	return diag, nil
+}
+
+type queueItem struct {
+	queueID     string
+	memorySpace string
+	memoryID    string
+}
+
+func (w *Worker) pendingItems(ctx context.Context, limit int) ([]queueItem, error) {
+	if limit <= 0 {
+		limit = 128
+	}
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT queue_id, memory_space, memory_id
 		FROM index_queue
 		WHERE processed_at_ms = 0
 		ORDER BY enqueued_at_ms
-		LIMIT 128
-	`)
+		LIMIT ?
+	`, limit)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
 
-	type item struct {
-		queueID     string
-		memorySpace string
-		memoryID    string
-	}
-	var items []item
+	var items []queueItem
 	for rows.Next() {
-		var it item
+		var it queueItem
 		if err := rows.Scan(&it.queueID, &it.memorySpace, &it.memoryID); err != nil {
-			return err
+			return nil, err
 		}
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	for _, it := range items {
-		if err := w.indexMemory(ctx, it.memorySpace, it.memoryID); err != nil {
-			return err
-		}
-		if _, err := w.db.ExecContext(ctx, `
-			UPDATE index_queue SET processed_at_ms = ? WHERE queue_id = ?
-		`, time.Now().UnixMilli(), it.queueID); err != nil {
-			return err
-		}
-	}
-	return nil
+	return items, nil
 }
 
-func (w *Worker) indexMemory(ctx context.Context, memorySpace, memoryID string) error {
+func (w *Worker) processItem(ctx context.Context, item queueItem) error {
+	tx, err := w.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	body, found, err := fetchBody(ctx, tx, item.memorySpace, item.memoryID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM memory_embeddings WHERE memory_space = ? AND memory_id = ?
+		`, item.memorySpace, item.memoryID); err != nil {
+			return err
+		}
+		return finishQueueItem(ctx, tx, item.queueID)
+	}
+	if err := upsertEmbedding(ctx, tx, item.memorySpace, item.memoryID, body); err != nil {
+		return err
+	}
+	return finishQueueItem(ctx, tx, item.queueID)
+}
+
+func fetchBody(ctx context.Context, tx *sql.Tx, memorySpace, memoryID string) (string, bool, error) {
 	var body string
 	switch memorySpace {
 	case "shared":
-		if err := w.db.QueryRowContext(ctx, `SELECT body FROM memory_nodes WHERE memory_id = ?`, memoryID).Scan(&body); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT body FROM memory_nodes WHERE memory_id = ?`, memoryID).Scan(&body); err != nil {
 			if err == sql.ErrNoRows {
-				return nil
+				return "", false, nil
 			}
-			return err
+			return "", false, err
 		}
+		return body, true, nil
 	case "private":
-		if err := w.db.QueryRowContext(ctx, `SELECT body FROM private_memory_nodes WHERE memory_id = ?`, memoryID).Scan(&body); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT body FROM private_memory_nodes WHERE memory_id = ?`, memoryID).Scan(&body); err != nil {
 			if err == sql.ErrNoRows {
-				return nil
+				return "", false, nil
 			}
-			return err
+			return "", false, err
 		}
+		return body, true, nil
 	default:
-		return nil
+		return "", false, nil
 	}
+}
+
+func upsertEmbedding(ctx context.Context, tx *sql.Tx, memorySpace, memoryID, body string) error {
 	vector := embed(body)
 	raw, err := json.Marshal(vector)
 	if err != nil {
 		return err
 	}
-	_, err = w.db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO memory_embeddings(memory_space, memory_id, embedding_json, embedding_dim, indexed_at_ms)
 		VALUES(?, ?, ?, ?, ?)
 		ON CONFLICT(memory_space, memory_id) DO UPDATE SET
@@ -112,6 +192,15 @@ func (w *Worker) indexMemory(ctx context.Context, memorySpace, memoryID string) 
 			indexed_at_ms = excluded.indexed_at_ms
 	`, memorySpace, memoryID, string(raw), len(vector), time.Now().UnixMilli())
 	return err
+}
+
+func finishQueueItem(ctx context.Context, tx *sql.Tx, queueID string) error {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE index_queue SET processed_at_ms = ? WHERE queue_id = ?
+	`, time.Now().UnixMilli(), queueID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func embed(body string) []float64 {
