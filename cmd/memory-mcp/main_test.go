@@ -34,6 +34,32 @@ type recallHTTPRequest struct {
 	Limit          int      `json:"limit"`
 }
 
+type memoryRefHTTPRequest struct {
+	MemorySpace string `json:"memory_space"`
+	MemoryID    string `json:"memory_id"`
+}
+
+type supersedeHTTPRequest struct {
+	OldMemoryID  string             `json:"old_memory_id"`
+	OldMemoryRef memoryRefHTTPRequest `json:"old_memory_ref"`
+	Request      storeHTTPRequest   `json:"request"`
+}
+
+type signalHTTPRequest struct {
+	MemoryRef     memoryRefHTTPRequest `json:"memory_ref"`
+	SignalType    string               `json:"signal_type"`
+	Value         float64              `json:"value"`
+	Reason        string               `json:"reason"`
+	AuthorAgentID string               `json:"author_agent_id"`
+	OriginPeerID  string               `json:"origin_peer_id"`
+	AuthoredAtMS  int64                `json:"authored_at_ms"`
+}
+
+type explainHTTPRequest struct {
+	MemoryRef memoryRefHTTPRequest `json:"memory_ref"`
+	Query     string               `json:"query"`
+}
+
 func TestToolsListIncludesStoreAndRecall(t *testing.T) {
 	resp := handle(config.Config{}, rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"})
 	result, ok := resp.Result.(map[string]any)
@@ -44,7 +70,7 @@ func TestToolsListIncludesStoreAndRecall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"memory.store", "memory.recall", "memory.sync_status"} {
+	for _, name := range []string{"memory.store", "memory.recall", "memory.supersede", "memory.signal", "memory.explain", "memory.sync_status"} {
 		if !strings.Contains(string(raw), name) {
 			t.Fatalf("tool list missing %s", name)
 		}
@@ -220,6 +246,211 @@ func TestMemorySyncStatusToolCallsHTTP(t *testing.T) {
 	sc := result["structuredContent"].(map[string]any)
 	if sc["request_id"] != "req_sync" {
 		t.Fatalf("request_id = %v, want req_sync", sc["request_id"])
+	}
+}
+
+func TestMemorySupersedeToolCallsHTTP(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	var gotBody supersedeHTTPRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(apiEnvelope{
+			OK: true,
+			Data: map[string]any{
+				"old_memory_ref": map[string]any{"memory_space": "shared", "memory_id": "01HOLD"},
+				"new_memory_ref": map[string]any{"memory_space": "shared", "memory_id": "01HNEW"},
+				"lifecycle_state": "superseded",
+			},
+			Warnings:  []string{"sync-pending"},
+			RequestID: "req_supersede",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	resp := handle(config.Config{API: config.API{BaseURL: server.URL}}, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params: mustJSON(t, map[string]any{
+			"name": "memory.supersede",
+			"arguments": map[string]any{
+				"old_memory_ref": map[string]any{"memory_space": "shared", "memory_id": "01HOLD"},
+				"request": map[string]any{
+					"namespace": "team/dev",
+					"body":      "updated body",
+					"subject":   "updated",
+				},
+			},
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %#v", resp.Error)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %s, want POST", gotMethod)
+	}
+	if gotPath != "/v1/memory/supersede" {
+		t.Fatalf("path = %s, want /v1/memory/supersede", gotPath)
+	}
+	if gotBody.OldMemoryRef.MemoryID != "01HOLD" || gotBody.Request.Body != "updated body" {
+		t.Fatalf("body = %#v", gotBody)
+	}
+	result := resp.Result.(map[string]any)
+	sc := result["structuredContent"].(map[string]any)
+	if sc["request_id"] != "req_supersede" {
+		t.Fatalf("request_id = %v, want req_supersede", sc["request_id"])
+	}
+}
+
+func TestMemorySignalToolCallsHTTP(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	var gotBody signalHTTPRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(apiEnvelope{
+			OK:        true,
+			Data:      map[string]any{"signal_id": "01HSIGNAL"},
+			Warnings:  []string{"local-only"},
+			RequestID: "req_signal",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	resp := handle(config.Config{API: config.API{BaseURL: server.URL}}, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params: mustJSON(t, map[string]any{
+			"name": "memory.signal",
+			"arguments": map[string]any{
+				"memory_ref": map[string]any{"memory_space": "shared", "memory_id": "01HMEM"},
+				"signal_type": "confirm",
+				"value":       2.0,
+				"reason":      "re-verified",
+			},
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %#v", resp.Error)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %s, want POST", gotMethod)
+	}
+	if gotPath != "/v1/memory/signal" {
+		t.Fatalf("path = %s, want /v1/memory/signal", gotPath)
+	}
+	if gotBody.MemoryRef.MemoryID != "01HMEM" || gotBody.SignalType != "confirm" || gotBody.Value != 2.0 {
+		t.Fatalf("body = %#v", gotBody)
+	}
+	result := resp.Result.(map[string]any)
+	sc := result["structuredContent"].(map[string]any)
+	if sc["request_id"] != "req_signal" {
+		t.Fatalf("request_id = %v, want req_signal", sc["request_id"])
+	}
+}
+
+func TestMemoryExplainToolCallsHTTP(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	var gotBody explainHTTPRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(apiEnvelope{
+			OK: true,
+			Data: map[string]any{
+				"provenance": map[string]any{"namespace": "team/dev"},
+				"score_breakdown": map[string]any{"matched_query": true},
+				"trust_summary": map[string]any{"signature_status": "valid"},
+				"signal_summary": map[string]any{"store": map[string]any{"count": 1}},
+			},
+			Warnings:  []string{},
+			RequestID: "req_explain",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	resp := handle(config.Config{API: config.API{BaseURL: server.URL}}, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params: mustJSON(t, map[string]any{
+			"name": "memory.explain",
+			"arguments": map[string]any{
+				"memory_ref": map[string]any{"memory_space": "shared", "memory_id": "01HMEM"},
+				"query":      "explain",
+			},
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %#v", resp.Error)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %s, want POST", gotMethod)
+	}
+	if gotPath != "/v1/memory/explain" {
+		t.Fatalf("path = %s, want /v1/memory/explain", gotPath)
+	}
+	if gotBody.MemoryRef.MemoryID != "01HMEM" || gotBody.Query != "explain" {
+		t.Fatalf("body = %#v", gotBody)
+	}
+	result := resp.Result.(map[string]any)
+	sc := result["structuredContent"].(map[string]any)
+	if sc["request_id"] != "req_explain" {
+		t.Fatalf("request_id = %v, want req_explain", sc["request_id"])
+	}
+}
+
+func TestToolAPIErrorBecomesRPCError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(apiEnvelope{
+			OK:        false,
+			Error:     &apiError{Code: "NOT_FOUND", Message: "memory not found", Retryable: false},
+			Warnings:  []string{"check-memory-id"},
+			RequestID: "req_missing",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	resp := handle(config.Config{API: config.API{BaseURL: server.URL}}, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params: mustJSON(t, map[string]any{
+			"name": "memory.explain",
+			"arguments": map[string]any{
+				"memory_ref": map[string]any{"memory_space": "shared", "memory_id": "missing"},
+				"query":      "explain",
+			},
+		}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected rpc error")
+	}
+	errMap := resp.Error.(map[string]any)
+	if errMap["message"] != "memory not found" {
+		t.Fatalf("message = %v, want memory not found", errMap["message"])
+	}
+	data := errMap["data"].(map[string]any)
+	if data["request_id"] != "req_missing" {
+		t.Fatalf("request_id = %v, want req_missing", data["request_id"])
+	}
+	if data["api_code"] != "NOT_FOUND" {
+		t.Fatalf("api_code = %v, want NOT_FOUND", data["api_code"])
 	}
 }
 

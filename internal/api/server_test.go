@@ -254,6 +254,142 @@ func TestMemorySupersedeContract(t *testing.T) {
 	}
 }
 
+func TestMemorySupersedeNotFoundContract(t *testing.T) {
+	fixture := newAPIFixture(t)
+	resp, raw := doJSON(t, fixture.server.Client(), http.MethodPost, fixture.server.URL+"/v1/memory/supersede", SupersedeRequest{
+		OldMemoryID: "missing-memory",
+		Request: StoreRequest{
+			Visibility:    memory.VisibilityShared,
+			Namespace:     "team/dev",
+			Body:          "new body",
+			Subject:       "new",
+			AuthorAgentID: "agent-a",
+			OriginPeerID:  "peer-a",
+		},
+	})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	var envelope testEnvelope[SupersedeResponse]
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK {
+		t.Fatal("expected ok=false")
+	}
+	if envelope.Error == nil || envelope.Error.Code != "NOT_FOUND" {
+		t.Fatalf("error = %#v, want NOT_FOUND", envelope.Error)
+	}
+}
+
+func TestMemorySupersedeRejectsPrivateTargetContract(t *testing.T) {
+	fixture := newAPIFixture(t)
+	resp, raw := doJSON(t, fixture.server.Client(), http.MethodPost, fixture.server.URL+"/v1/memory/supersede", SupersedeRequest{
+		OldMemoryRef: MemoryRef{MemorySpace: "private", MemoryID: "local-memory"},
+		Request: StoreRequest{
+			Visibility:    memory.VisibilityShared,
+			Namespace:     "team/dev",
+			Body:          "new body",
+			Subject:       "new",
+			AuthorAgentID: "agent-a",
+			OriginPeerID:  "peer-a",
+		},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	var envelope testEnvelope[SupersedeResponse]
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK {
+		t.Fatal("expected ok=false")
+	}
+	if envelope.Error == nil || envelope.Error.Code != "PRIVATE_ONLY" {
+		t.Fatalf("error = %#v, want PRIVATE_ONLY", envelope.Error)
+	}
+}
+
+func TestMemorySignalContract(t *testing.T) {
+	fixture := newAPIFixture(t)
+	client := fixture.server.Client()
+	_, raw := doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/memory/store", StoreRequest{
+		Visibility:    memory.VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "signal contract body",
+		Subject:       "signal",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+	var storeEnvelope testEnvelope[StoreResponse]
+	if err := json.Unmarshal(raw, &storeEnvelope); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, raw := doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/memory/signal", SignalRequest{
+		MemoryRef:     storeEnvelope.Data.MemoryRef,
+		SignalType:    "confirm",
+		Value:         2.0,
+		Reason:        "re-verified",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var envelope testEnvelope[SignalResponse]
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.OK {
+		t.Fatal("expected ok=true")
+	}
+	if envelope.Data.SignalID == "" {
+		t.Fatal("expected signal_id")
+	}
+}
+
+func TestMemoryExplainContract(t *testing.T) {
+	fixture := newAPIFixture(t)
+	client := fixture.server.Client()
+	_, raw := doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/memory/store", StoreRequest{
+		Visibility:    memory.VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "explain contract body",
+		Subject:       "explain",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+	var storeEnvelope testEnvelope[StoreResponse]
+	if err := json.Unmarshal(raw, &storeEnvelope); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, raw := doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/memory/explain", ExplainRequest{
+		MemoryRef: storeEnvelope.Data.MemoryRef,
+		Query:     "explain",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var envelope testEnvelope[ExplainResponse]
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.OK {
+		t.Fatal("expected ok=true")
+	}
+	if !envelope.Data.ScoreBreakdown.MatchedQuery {
+		t.Fatal("expected matched_query=true")
+	}
+	if envelope.Data.TrustSummary.SignatureStatus != string(memory.SignatureStatusValid) {
+		t.Fatalf("signature_status = %q, want valid", envelope.Data.TrustSummary.SignatureStatus)
+	}
+	if envelope.Data.SignalSummary["store"].Count != 1 {
+		t.Fatalf("store count = %d, want 1", envelope.Data.SignalSummary["store"].Count)
+	}
+}
+
 func TestSyncStatusContract(t *testing.T) {
 	fixture := newAPIFixture(t)
 	ctx := context.Background()

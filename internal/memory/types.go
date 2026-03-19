@@ -1,5 +1,7 @@
 package memory
 
+import "errors"
+
 type Visibility string
 
 const (
@@ -14,6 +16,22 @@ const (
 	SignatureStatusMissingSignature SignatureStatus = "missing_signature"
 	SignatureStatusInvalidSignature SignatureStatus = "invalid_signature"
 	SignatureStatusUnknownPeer      SignatureStatus = "unknown_peer"
+)
+
+type SignalType string
+
+const (
+	SignalTypeReinforce SignalType = "reinforce"
+	SignalTypeDeprecate SignalType = "deprecate"
+	SignalTypeConfirm   SignalType = "confirm"
+	SignalTypeDeny      SignalType = "deny"
+	SignalTypePin       SignalType = "pin"
+	SignalTypeBookmark  SignalType = "bookmark"
+)
+
+var (
+	ErrMemoryNotFound = errors.New("memory not found")
+	ErrPrivateOnly    = errors.New("private memory cannot be superseded")
 )
 
 type StoreRequest struct {
@@ -50,4 +68,63 @@ type RecallResult struct {
 	SourceURI      string `json:"source_uri"`
 	SourceHash     string `json:"source_hash"`
 	OriginPeerID   string `json:"origin_peer_id"`
+}
+
+type SignalRequest struct {
+	MemorySpace   string  `json:"memory_space"`
+	MemoryID      string  `json:"memory_id"`
+	SignalType    string  `json:"signal_type"`
+	Value         float64 `json:"value"`
+	Reason        string  `json:"reason,omitempty"`
+	AuthorAgentID string  `json:"author_agent_id,omitempty"`
+	OriginPeerID  string  `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64   `json:"authored_at_ms,omitempty"`
+}
+
+type ExplainRequest struct {
+	MemorySpace string `json:"memory_space"`
+	MemoryID    string `json:"memory_id"`
+	Query       string `json:"query"`
+}
+
+type ExplainProvenance struct {
+	Namespace      string `json:"namespace"`
+	MemoryType     string `json:"memory_type"`
+	Subject        string `json:"subject"`
+	LifecycleState string `json:"lifecycle_state"`
+	SourceURI      string `json:"source_uri"`
+	SourceHash     string `json:"source_hash"`
+	AuthorAgentID  string `json:"author_agent_id"`
+	OriginPeerID   string `json:"origin_peer_id"`
+	AuthoredAtMS   int64  `json:"authored_at_ms"`
+}
+
+type ExplainScoreBreakdown struct {
+	MatchedQuery  bool    `json:"matched_query"`
+	RecallEligible bool   `json:"recall_eligible"`
+	LexicalBM25   float64 `json:"lexical_bm25"`
+	RankingBucket int     `json:"ranking_bucket"`
+	TrustWeight   float64 `json:"trust_weight"`
+	AuthoredAtMS  int64   `json:"authored_at_ms"`
+}
+
+type ExplainTrustSummary struct {
+	SignatureStatus string  `json:"signature_status"`
+	SignatureDetail string  `json:"signature_detail"`
+	PeerTrustState  string  `json:"peer_trust_state"`
+	PeerTrustWeight float64 `json:"peer_trust_weight"`
+	HasSigningKey   bool    `json:"has_signing_key"`
+}
+
+type ExplainSignalSummary struct {
+	Count            int     `json:"count"`
+	Sum              float64 `json:"sum"`
+	LatestSignalAtMS int64   `json:"latest_signal_at_ms"`
+}
+
+type ExplainResult struct {
+	Provenance     ExplainProvenance                `json:"provenance"`
+	ScoreBreakdown ExplainScoreBreakdown            `json:"score_breakdown"`
+	TrustSummary   ExplainTrustSummary              `json:"trust_summary"`
+	SignalSummary  map[string]ExplainSignalSummary  `json:"signal_summary"`
 }

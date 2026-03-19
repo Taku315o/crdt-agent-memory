@@ -2,12 +2,42 @@ package memory
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 
 	"crdt-agent-memory/internal/storage"
 	"crdt-agent-memory/internal/testenv"
 )
+
+type memoryFixture struct {
+	ctx context.Context
+	db  *sql.DB
+	svc *Service
+}
+
+func newMemoryFixture(t *testing.T, peerID string) *memoryFixture {
+	t.Helper()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "memory.sqlite")
+	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
+		Path:         dbPath,
+		CRSQLitePath: testenv.CRSQLitePath(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := storage.RunMigrations(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	return &memoryFixture{
+		ctx: ctx,
+		db:  db,
+		svc: NewService(db, testenv.SignerForPeer(t, peerID)),
+	}
+}
 
 func TestStoreRoutesSharedAndPrivateSeparately(t *testing.T) {
 	ctx := context.Background()
@@ -236,5 +266,301 @@ func TestRecallRanksValidBeforeMissingAndByTrustWeight(t *testing.T) {
 	}
 	if results[2].MemoryID != missingID {
 		t.Fatalf("third memory_id = %q, want %q", results[2].MemoryID, missingID)
+	}
+}
+
+func TestSupersedeFailsWhenOldMemoryMissing(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+
+	_, err := fixture.svc.Supersede(fixture.ctx, "missing-memory", StoreRequest{
+		Namespace:     "team/dev",
+		Body:          "new body",
+		Subject:       "new",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+	if !errors.Is(err, ErrMemoryNotFound) {
+		t.Fatalf("err = %v, want ErrMemoryNotFound", err)
+	}
+
+	var memoryCount, edgeCount, queueCount int
+	if err := fixture.db.QueryRowContext(fixture.ctx, `SELECT COUNT(*) FROM memory_nodes`).Scan(&memoryCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.QueryRowContext(fixture.ctx, `SELECT COUNT(*) FROM memory_edges`).Scan(&edgeCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.QueryRowContext(fixture.ctx, `SELECT COUNT(*) FROM index_queue`).Scan(&queueCount); err != nil {
+		t.Fatal(err)
+	}
+	if memoryCount != 0 {
+		t.Fatalf("memory count = %d, want 0", memoryCount)
+	}
+	if edgeCount != 0 {
+		t.Fatalf("edge count = %d, want 0", edgeCount)
+	}
+	if queueCount != 0 {
+		t.Fatalf("queue count = %d, want 0", queueCount)
+	}
+}
+
+func TestSupersedeMarksOldMemoryAndCreatesEdgeAtomically(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+
+	oldID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "old body",
+		Subject:       "old",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newID, err := fixture.svc.Supersede(fixture.ctx, oldID, StoreRequest{
+		Namespace:     "team/dev",
+		Body:          "new body",
+		Subject:       "new",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var lifecycle string
+	if err := fixture.db.QueryRowContext(fixture.ctx, `
+		SELECT lifecycle_state FROM memory_nodes WHERE memory_id = ?
+	`, oldID).Scan(&lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle != "superseded" {
+		t.Fatalf("lifecycle_state = %q, want superseded", lifecycle)
+	}
+
+	var edgeCount int
+	if err := fixture.db.QueryRowContext(fixture.ctx, `
+		SELECT COUNT(*) FROM memory_edges
+		WHERE from_memory_id = ? AND to_memory_id = ? AND relation_type = 'supersedes'
+	`, newID, oldID).Scan(&edgeCount); err != nil {
+		t.Fatal(err)
+	}
+	if edgeCount != 1 {
+		t.Fatalf("edge count = %d, want 1", edgeCount)
+	}
+}
+
+func TestSignalRoutesSharedAndPrivate(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+
+	sharedID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "shared signal body",
+		Subject:       "shared",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityPrivate,
+		Namespace:     "local/dev",
+		Body:          "private signal body",
+		Subject:       "private",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := fixture.svc.Signal(fixture.ctx, SignalRequest{
+		MemorySpace:   "shared",
+		MemoryID:      sharedID,
+		SignalType:    "confirm",
+		Value:         2.0,
+		Reason:        "verified",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.svc.Signal(fixture.ctx, SignalRequest{
+		MemorySpace:   "private",
+		MemoryID:      privateID,
+		SignalType:    "bookmark",
+		Value:         1.0,
+		Reason:        "keep local",
+		AuthorAgentID: "agent-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var sharedSignals, privateSignals int
+	if err := fixture.db.QueryRowContext(fixture.ctx, `
+		SELECT COUNT(*) FROM memory_signals WHERE memory_id = ? AND signal_type = 'confirm'
+	`, sharedID).Scan(&sharedSignals); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.QueryRowContext(fixture.ctx, `
+		SELECT COUNT(*) FROM private_memory_signals WHERE memory_id = ? AND signal_type = 'bookmark'
+	`, privateID).Scan(&privateSignals); err != nil {
+		t.Fatal(err)
+	}
+	if sharedSignals != 1 {
+		t.Fatalf("shared signal count = %d, want 1", sharedSignals)
+	}
+	if privateSignals != 1 {
+		t.Fatalf("private signal count = %d, want 1", privateSignals)
+	}
+}
+
+func TestSignalRejectsReservedTypeAndNonPositiveValue(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+	memoryID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "signal validation body",
+		Subject:       "shared",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := fixture.svc.Signal(fixture.ctx, SignalRequest{
+		MemorySpace: "shared",
+		MemoryID:    memoryID,
+		SignalType:  "store",
+		Value:       1.0,
+	}); err == nil {
+		t.Fatal("expected reserved signal_type error")
+	}
+	if _, err := fixture.svc.Signal(fixture.ctx, SignalRequest{
+		MemorySpace: "shared",
+		MemoryID:    memoryID,
+		SignalType:  "confirm",
+		Value:       0,
+	}); err == nil {
+		t.Fatal("expected value validation error")
+	}
+}
+
+func TestExplainReturnsTrustAndSignalBreakdown(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+	if _, err := fixture.db.ExecContext(fixture.ctx, `
+		INSERT INTO peer_policies(peer_id, display_name, trust_state, trust_weight, signing_public_key, updated_at_ms)
+		VALUES('peer-a', 'peer-a', 'allow', 0.6, ?, 1)
+	`, testenv.PublicKeyHexForPeer("peer-a")); err != nil {
+		t.Fatal(err)
+	}
+
+	memoryID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "explainable ranked memory",
+		Subject:       "explain",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.svc.Signal(fixture.ctx, SignalRequest{
+		MemorySpace:   "shared",
+		MemoryID:      memoryID,
+		SignalType:    "confirm",
+		Value:         2.0,
+		Reason:        "re-verified",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	explained, err := fixture.svc.Explain(fixture.ctx, ExplainRequest{
+		MemorySpace: "shared",
+		MemoryID:    memoryID,
+		Query:       "ranked",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !explained.ScoreBreakdown.MatchedQuery {
+		t.Fatal("expected matched_query=true")
+	}
+	if !explained.ScoreBreakdown.RecallEligible {
+		t.Fatal("expected recall_eligible=true")
+	}
+	if explained.TrustSummary.SignatureStatus != string(SignatureStatusValid) {
+		t.Fatalf("signature_status = %q, want valid", explained.TrustSummary.SignatureStatus)
+	}
+	if explained.TrustSummary.PeerTrustWeight != 0.6 {
+		t.Fatalf("trust_weight = %v, want 0.6", explained.TrustSummary.PeerTrustWeight)
+	}
+	if !explained.TrustSummary.HasSigningKey {
+		t.Fatal("expected has_signing_key=true")
+	}
+	if explained.SignalSummary["confirm"].Count != 1 {
+		t.Fatalf("confirm count = %d, want 1", explained.SignalSummary["confirm"].Count)
+	}
+	if explained.SignalSummary["confirm"].Sum != 2.0 {
+		t.Fatalf("confirm sum = %v, want 2.0", explained.SignalSummary["confirm"].Sum)
+	}
+	if explained.SignalSummary["store"].Count != 1 {
+		t.Fatalf("store count = %d, want 1", explained.SignalSummary["store"].Count)
+	}
+}
+
+func TestExplainReturnsQueryMismatchAndInvalidSignature(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+	memoryID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "query mismatch memory",
+		Subject:       "explain",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mismatch, err := fixture.svc.Explain(fixture.ctx, ExplainRequest{
+		MemorySpace: "shared",
+		MemoryID:    memoryID,
+		Query:       "unmatched",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mismatch.ScoreBreakdown.MatchedQuery {
+		t.Fatal("expected matched_query=false")
+	}
+	if mismatch.ScoreBreakdown.LexicalBM25 != 0 {
+		t.Fatalf("lexical_bm25 = %v, want 0", mismatch.ScoreBreakdown.LexicalBM25)
+	}
+
+	if err := upsertVerificationState(fixture.ctx, fixture.db, "shared", memoryID, SignatureStatusInvalidSignature, "bad signature"); err != nil {
+		t.Fatal(err)
+	}
+	invalid, err := fixture.svc.Explain(fixture.ctx, ExplainRequest{
+		MemorySpace: "shared",
+		MemoryID:    memoryID,
+		Query:       "query",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invalid.ScoreBreakdown.RecallEligible {
+		t.Fatal("expected recall_eligible=false")
+	}
+	if invalid.TrustSummary.SignatureStatus != string(SignatureStatusInvalidSignature) {
+		t.Fatalf("signature_status = %q, want invalid_signature", invalid.TrustSummary.SignatureStatus)
 	}
 }

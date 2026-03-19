@@ -40,7 +40,7 @@ This repository now has a usable local development path for memory writes, recal
 
 ### Step 5: MCP expansion
 
-- `memory-mcp` now exposes `memory.store`, `memory.recall`, and `memory.sync_status`.
+- `memory-mcp` now exposes `memory.store`, `memory.recall`, `memory.supersede`, `memory.signal`, `memory.explain`, and `memory.sync_status`.
 - The MCP bridge always calls `memoryd` over HTTP.
 - The bridge does not call the memory core directly.
 - Tool calls forward `request_id` and `warnings` from the HTTP envelope.
@@ -54,7 +54,7 @@ This repository now has a usable local development path for memory writes, recal
 | Sync core | Functional in `http-dev` mode | handshake, apply, replay safety, quarantine, status surface are implemented |
 | Transport | Abstracted, but still `http-dev` only | Iroh is still pending |
 | Indexing | Minimum operational level reached | retry-safe processing, cleanup, diagnostics, tests |
-| MCP bridge | Partial but useful | `store` / `recall` / `sync_status` are available |
+| MCP bridge | Broad enough for agent workflows | `store` / `recall` / `supersede` / `signal` / `explain` / `sync_status` are available |
 | Observability | Basic operational visibility exists | queue backlog and sync status are inspectable |
 
 ## 3. Remaining Work
@@ -64,22 +64,18 @@ The following items are still not implemented or are only partially implemented.
 - Iroh transport replacement.
 - Removing the remaining `sync_change_log` dependency in the sync path.
 - Hardening the sync/index path so CRR schema changes are less brittle.
-- `memory.supersede` MCP tool.
-- `memory.signal` MCP tool.
 - `memory.trace_decision` MCP tool.
-- `memory.explain` MCP tool.
 - Production semantic embedding instead of deterministic local embeddings.
-- Signature / trust / scrubber work planned for the next phase.
+- Richer graph-based explainability beyond query-aware trust/bm25 breakdown.
 
 ## 4. Important Gaps To Keep In Mind
 
 - Sync still runs in `http-dev`, not Iroh.
 - The sync extraction path still depends on the `sync_change_log` capture flow.
 - `memory.recall` is still FTS-backed; the index worker maintains derived embedding state and queue health, but it is not the canonical recall engine.
-- The MCP bridge currently covers only the tools needed for day-to-day smoke and client integration.
+- `memory.explain` is query-aware and trust-aware, but it is still tied to the current FTS ranking path rather than a future semantic/vector ranker.
 
 ## 5. Verification
 
 - `make test` passes as of this snapshot.
 - Transport, API contract, index worker, and MCP bridge all have regression tests around the new behavior.
-

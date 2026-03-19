@@ -88,6 +88,55 @@ type SupersedeResponse struct {
 	LifecycleState string    `json:"lifecycle_state"`
 }
 
+type SignalRequest struct {
+	MemoryRef      MemoryRef `json:"memory_ref"`
+	SignalType     string    `json:"signal_type"`
+	Value          float64   `json:"value"`
+	Reason         string    `json:"reason,omitempty"`
+	AuthorAgentID  string    `json:"author_agent_id,omitempty"`
+	OriginPeerID   string    `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS   int64     `json:"authored_at_ms,omitempty"`
+}
+
+type SignalResponse struct {
+	SignalID string `json:"signal_id"`
+}
+
+type ExplainRequest struct {
+	MemoryRef MemoryRef `json:"memory_ref"`
+	Query     string    `json:"query"`
+}
+
+type ExplainScoreBreakdown struct {
+	MatchedQuery   bool    `json:"matched_query"`
+	RecallEligible bool    `json:"recall_eligible"`
+	LexicalBM25    float64 `json:"lexical_bm25"`
+	RankingBucket  int     `json:"ranking_bucket"`
+	TrustWeight    float64 `json:"trust_weight"`
+	AuthoredAtMS   int64   `json:"authored_at_ms"`
+}
+
+type ExplainTrustSummary struct {
+	SignatureStatus string  `json:"signature_status"`
+	SignatureDetail string  `json:"signature_detail"`
+	PeerTrustState  string  `json:"peer_trust_state"`
+	PeerTrustWeight float64 `json:"peer_trust_weight"`
+	HasSigningKey   bool    `json:"has_signing_key"`
+}
+
+type ExplainSignalSummary struct {
+	Count            int     `json:"count"`
+	Sum              float64 `json:"sum"`
+	LatestSignalAtMS int64   `json:"latest_signal_at_ms"`
+}
+
+type ExplainResponse struct {
+	Provenance     memory.ExplainProvenance            `json:"provenance"`
+	ScoreBreakdown ExplainScoreBreakdown               `json:"score_breakdown"`
+	TrustSummary   ExplainTrustSummary                 `json:"trust_summary"`
+	SignalSummary  map[string]ExplainSignalSummary     `json:"signal_summary"`
+}
+
 type SyncStatusPeer struct {
 	PeerID          string  `json:"peer_id"`
 	Namespace       string  `json:"namespace"`
@@ -166,6 +215,27 @@ func (r SupersedeRequest) OldID() string {
 	return r.OldMemoryRef.MemoryID
 }
 
+func (r SignalRequest) ToMemoryRequest() memory.SignalRequest {
+	return memory.SignalRequest{
+		MemorySpace:   r.MemoryRef.MemorySpace,
+		MemoryID:      r.MemoryRef.MemoryID,
+		SignalType:    r.SignalType,
+		Value:         r.Value,
+		Reason:        r.Reason,
+		AuthorAgentID: r.AuthorAgentID,
+		OriginPeerID:  r.OriginPeerID,
+		AuthoredAtMS:  r.AuthoredAtMS,
+	}
+}
+
+func (r ExplainRequest) ToMemoryRequest() memory.ExplainRequest {
+	return memory.ExplainRequest{
+		MemorySpace: r.MemoryRef.MemorySpace,
+		MemoryID:    r.MemoryRef.MemoryID,
+		Query:       r.Query,
+	}
+}
+
 func MemoryRefFromVisibility(visibility memory.Visibility, memoryID string) MemoryRef {
 	memorySpace := string(visibility)
 	if memorySpace == "" {
@@ -189,6 +259,36 @@ func RecallItemFromResult(result memory.RecallResult) RecallItem {
 		SourceURI:      result.SourceURI,
 		SourceHash:     result.SourceHash,
 		OriginPeerID:   result.OriginPeerID,
+	}
+}
+
+func ExplainResponseFromResult(result memory.ExplainResult) ExplainResponse {
+	signalSummary := make(map[string]ExplainSignalSummary, len(result.SignalSummary))
+	for signalType, item := range result.SignalSummary {
+		signalSummary[signalType] = ExplainSignalSummary{
+			Count:            item.Count,
+			Sum:              item.Sum,
+			LatestSignalAtMS: item.LatestSignalAtMS,
+		}
+	}
+	return ExplainResponse{
+		Provenance: result.Provenance,
+		ScoreBreakdown: ExplainScoreBreakdown{
+			MatchedQuery:   result.ScoreBreakdown.MatchedQuery,
+			RecallEligible: result.ScoreBreakdown.RecallEligible,
+			LexicalBM25:    result.ScoreBreakdown.LexicalBM25,
+			RankingBucket:  result.ScoreBreakdown.RankingBucket,
+			TrustWeight:    result.ScoreBreakdown.TrustWeight,
+			AuthoredAtMS:   result.ScoreBreakdown.AuthoredAtMS,
+		},
+		TrustSummary: ExplainTrustSummary{
+			SignatureStatus: result.TrustSummary.SignatureStatus,
+			SignatureDetail: result.TrustSummary.SignatureDetail,
+			PeerTrustState:  result.TrustSummary.PeerTrustState,
+			PeerTrustWeight: result.TrustSummary.PeerTrustWeight,
+			HasSigningKey:   result.TrustSummary.HasSigningKey,
+		},
+		SignalSummary: signalSummary,
 	}
 }
 

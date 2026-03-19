@@ -77,6 +77,32 @@ type recallToolRequest struct {
 	Limit          int      `json:"limit,omitempty"`
 }
 
+type memoryRef struct {
+	MemorySpace string `json:"memory_space"`
+	MemoryID    string `json:"memory_id"`
+}
+
+type supersedeToolRequest struct {
+	OldMemoryID  string           `json:"old_memory_id,omitempty"`
+	OldMemoryRef memoryRef        `json:"old_memory_ref,omitempty"`
+	Request      storeToolRequest `json:"request"`
+}
+
+type signalToolRequest struct {
+	MemoryRef     memoryRef `json:"memory_ref"`
+	SignalType    string    `json:"signal_type"`
+	Value         float64   `json:"value"`
+	Reason        string    `json:"reason,omitempty"`
+	AuthorAgentID string    `json:"author_agent_id,omitempty"`
+	OriginPeerID  string    `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64     `json:"authored_at_ms,omitempty"`
+}
+
+type explainToolRequest struct {
+	MemoryRef memoryRef `json:"memory_ref"`
+	Query     string    `json:"query"`
+}
+
 var apiClient = &http.Client{Timeout: 10 * time.Second}
 
 func main() {
@@ -190,6 +216,85 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "memory.supersede",
+			"description": "supersede a shared memory via memoryd HTTP",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"old_memory_id": map[string]any{"type": "string"},
+					"old_memory_ref": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"memory_space": map[string]any{"type": "string"},
+							"memory_id":    map[string]any{"type": "string"},
+						},
+					},
+					"request": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"memory_id":       map[string]any{"type": "string"},
+							"visibility":      map[string]any{"type": "string"},
+							"namespace":       map[string]any{"type": "string"},
+							"memory_type":     map[string]any{"type": "string"},
+							"scope":           map[string]any{"type": "string"},
+							"subject":         map[string]any{"type": "string"},
+							"body":            map[string]any{"type": "string"},
+							"source_uri":      map[string]any{"type": "string"},
+							"source_hash":     map[string]any{"type": "string"},
+							"author_agent_id": map[string]any{"type": "string"},
+							"origin_peer_id":  map[string]any{"type": "string"},
+							"authored_at_ms":  map[string]any{"type": "integer"},
+						},
+						"required": []string{"namespace", "body"},
+					},
+				},
+				"required": []string{"request"},
+			},
+		},
+		{
+			"name":        "memory.signal",
+			"description": "append a signal to a shared or private memory via memoryd HTTP",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"memory_ref": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"memory_space": map[string]any{"type": "string"},
+							"memory_id":    map[string]any{"type": "string"},
+						},
+						"required": []string{"memory_space", "memory_id"},
+					},
+					"signal_type":    map[string]any{"type": "string"},
+					"value":          map[string]any{"type": "number"},
+					"reason":         map[string]any{"type": "string"},
+					"author_agent_id": map[string]any{"type": "string"},
+					"origin_peer_id": map[string]any{"type": "string"},
+					"authored_at_ms": map[string]any{"type": "integer"},
+				},
+				"required": []string{"memory_ref", "signal_type", "value"},
+			},
+		},
+		{
+			"name":        "memory.explain",
+			"description": "explain why a memory matches a query and how trust affects it",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"memory_ref": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"memory_space": map[string]any{"type": "string"},
+							"memory_id":    map[string]any{"type": "string"},
+						},
+						"required": []string{"memory_space", "memory_id"},
+					},
+					"query": map[string]any{"type": "string"},
+				},
+				"required": []string{"memory_ref", "query"},
+			},
+		},
+		{
 			"name":        "memory.sync_status",
 			"description": "return local sync health without mutating state",
 			"inputSchema": map[string]any{
@@ -252,9 +357,91 @@ func callTool(cfg config.Config, params toolCallParams) (any, map[string]any) {
 			return nil, rpcErrorFromEnvelope(payload, err)
 		}
 		return toolResultFromEnvelope(payload), nil
+	case "memory.supersede":
+		var args supersedeToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if strings.TrimSpace(args.OldMemoryID) == "" && strings.TrimSpace(args.OldMemoryRef.MemoryID) == "" {
+			return nil, map[string]any{"code": -32602, "message": "old_memory_id is required"}
+		}
+		if strings.TrimSpace(args.Request.Namespace) == "" {
+			return nil, map[string]any{"code": -32602, "message": "request.namespace is required"}
+		}
+		if strings.TrimSpace(args.Request.Body) == "" {
+			return nil, map[string]any{"code": -32602, "message": "request.body is required"}
+		}
+		if err := validateToolMemoryRef(args.OldMemoryRef, false); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/supersede", nil, args)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	case "memory.signal":
+		var args signalToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if err := validateToolMemoryRef(args.MemoryRef, true); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if strings.TrimSpace(args.SignalType) == "" {
+			return nil, map[string]any{"code": -32602, "message": "signal_type is required"}
+		}
+		if args.Value <= 0 {
+			return nil, map[string]any{"code": -32602, "message": "value must be greater than 0"}
+		}
+		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/signal", nil, args)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	case "memory.explain":
+		var args explainToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if err := validateToolMemoryRef(args.MemoryRef, true); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if strings.TrimSpace(args.Query) == "" {
+			return nil, map[string]any{"code": -32602, "message": "query is required"}
+		}
+		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/explain", nil, args)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
 	default:
 		return nil, map[string]any{"code": -32601, "message": "unknown tool"}
 	}
+}
+
+func validateToolMemoryRef(ref memoryRef, required bool) error {
+	if strings.TrimSpace(ref.MemoryID) == "" {
+		if required {
+			return fmt.Errorf("memory_ref.memory_id is required")
+		}
+		if strings.TrimSpace(ref.MemorySpace) != "" {
+			return fmt.Errorf("old_memory_ref.memory_id is required")
+		}
+		return nil
+	}
+	if strings.TrimSpace(ref.MemorySpace) == "" {
+		if required {
+			return fmt.Errorf("memory_ref.memory_space is required")
+		}
+		return fmt.Errorf("old_memory_ref.memory_space is required")
+	}
+	if ref.MemorySpace != "shared" && ref.MemorySpace != "private" {
+		if required {
+			return fmt.Errorf("memory_ref.memory_space must be shared or private")
+		}
+		return fmt.Errorf("old_memory_ref.memory_space must be shared or private")
+	}
+	return nil
 }
 
 func decodeArguments(arguments map[string]any, dst any) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -29,6 +30,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/memory/store", s.handleStore)
 	mux.HandleFunc("/v1/memory/recall", s.handleRecall)
 	mux.HandleFunc("/v1/memory/supersede", s.handleSupersede)
+	mux.HandleFunc("/v1/memory/signal", s.handleSignal)
+	mux.HandleFunc("/v1/memory/explain", s.handleExplain)
 	mux.HandleFunc("/v1/sync/status", s.handleSyncStatus)
 	return mux
 }
@@ -72,7 +75,7 @@ func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.Memory.Store(r.Context(), req.ToMemoryRequest())
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		s.writeMemoryError(w, requestID, err)
 		return
 	}
 	s.writeOK(w, requestID, StoreResponse{
@@ -108,7 +111,7 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		Limit:          limit,
 	})
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		s.writeMemoryError(w, requestID, err)
 		return
 	}
 	items := make([]RecallItem, 0, len(results))
@@ -134,9 +137,17 @@ func (s *Server) handleSupersede(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", "old_memory_id is required", false, nil)
 		return
 	}
+	if req.OldMemoryRef.MemorySpace == string(memory.VisibilityPrivate) {
+		s.writeError(w, http.StatusBadRequest, requestID, "PRIVATE_ONLY", memory.ErrPrivateOnly.Error(), false, nil)
+		return
+	}
+	if req.OldMemoryRef.MemorySpace != "" && req.OldMemoryRef.MemorySpace != string(memory.VisibilityShared) && req.OldMemoryRef.MemorySpace != string(memory.VisibilityPrivate) {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", "old_memory_ref.memory_space must be shared or private", false, nil)
+		return
+	}
 	id, err := s.Memory.Supersede(r.Context(), oldID, req.ToMemoryRequest())
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		s.writeMemoryError(w, requestID, err)
 		return
 	}
 	s.writeOK(w, requestID, SupersedeResponse{
@@ -144,6 +155,52 @@ func (s *Server) handleSupersede(w http.ResponseWriter, r *http.Request) {
 		NewMemoryRef:   MemoryRef{MemorySpace: "shared", MemoryID: id},
 		LifecycleState: "superseded",
 	})
+}
+
+func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "", "METHOD_NOT_ALLOWED", "method not allowed", false, nil)
+		return
+	}
+	requestID := NewRequestID()
+	var req SignalRequest
+	if err := decodeRequest(r.Body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		return
+	}
+	if err := validateMemoryRef(req.MemoryRef); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		return
+	}
+	signalID, err := s.Memory.Signal(r.Context(), req.ToMemoryRequest())
+	if err != nil {
+		s.writeMemoryError(w, requestID, err)
+		return
+	}
+	s.writeOK(w, requestID, SignalResponse{SignalID: signalID})
+}
+
+func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "", "METHOD_NOT_ALLOWED", "method not allowed", false, nil)
+		return
+	}
+	requestID := NewRequestID()
+	var req ExplainRequest
+	if err := decodeRequest(r.Body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		return
+	}
+	if err := validateMemoryRef(req.MemoryRef); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		return
+	}
+	result, err := s.Memory.Explain(r.Context(), req.ToMemoryRequest())
+	if err != nil {
+		s.writeMemoryError(w, requestID, err)
+		return
+	}
+	s.writeOK(w, requestID, ExplainResponseFromResult(result))
 }
 
 func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
@@ -189,6 +246,29 @@ func (s *Server) writeOK(w http.ResponseWriter, requestID string, data any) {
 
 func (s *Server) writeError(w http.ResponseWriter, status int, requestID, code, message string, retryable bool, details any) {
 	writeEnvelope(w, status, NewErrorEnvelope(requestID, code, message, retryable, details))
+}
+
+func (s *Server) writeMemoryError(w http.ResponseWriter, requestID string, err error) {
+	switch {
+	case errors.Is(err, memory.ErrMemoryNotFound):
+		s.writeError(w, http.StatusNotFound, requestID, "NOT_FOUND", err.Error(), false, nil)
+	case errors.Is(err, memory.ErrPrivateOnly):
+		s.writeError(w, http.StatusBadRequest, requestID, "PRIVATE_ONLY", err.Error(), false, nil)
+	default:
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+	}
+}
+
+func validateMemoryRef(ref MemoryRef) error {
+	if strings.TrimSpace(ref.MemoryID) == "" {
+		return errors.New("memory_ref.memory_id is required")
+	}
+	switch ref.MemorySpace {
+	case string(memory.VisibilityShared), string(memory.VisibilityPrivate):
+		return nil
+	default:
+		return errors.New("memory_ref.memory_space must be shared or private")
+	}
 }
 
 func writeEnvelope(w http.ResponseWriter, status int, payload Envelope) {

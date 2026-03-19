@@ -222,12 +222,14 @@ Explicit downgrade rule:
 
 ```json
 {
-  "old_memory_ref": {
-    "memory_space": "shared",
-    "memory_id": "01H..."
+  "old_memory_id": "01H...",
+  "request": {
+    "namespace": "team/dev",
+    "body": "Updated claim body.",
+    "subject": "corrected claim",
+    "author_agent_id": "agent-a",
+    "origin_peer_id": "peer-a"
   },
-  "new_body": "Updated claim body.",
-  "reason": "Source document changed."
 }
 ```
 
@@ -267,14 +269,31 @@ Explicit downgrade rule:
 ```json
 {
   "memory_ref": {
-    "memory_space": "shared",
+    "memory_space": "private",
     "memory_id": "01H..."
   },
   "signal_type": "confirm",
   "value": 1.0,
-  "reason": "Re-verified against upstream docs."
+  "reason": "Re-verified against upstream docs.",
+  "author_agent_id": "agent-a",
+  "origin_peer_id": "peer-a"
 }
 ```
+
+Allowed `signal_type`:
+
+- `reinforce`
+- `deprecate`
+- `confirm`
+- `deny`
+- `pin`
+- `bookmark`
+
+Notes:
+
+- `store` is reserved for internal initial-write events and is rejected by the API
+- `value` must be greater than `0`
+- `memory_ref.memory_space` may be `shared` or `private`
 
 ### Output
 
@@ -339,7 +358,8 @@ Explicit downgrade rule:
   "memory_ref": {
     "memory_space": "shared",
     "memory_id": "01H..."
-  }
+  },
+  "query": "explain contract body"
 }
 ```
 
@@ -349,9 +369,39 @@ Explicit downgrade rule:
 {
   "ok": true,
   "data": {
-    "score_breakdown": {},
-    "provenance": {},
-    "trust_summary": {}
+    "provenance": {
+      "namespace": "team/dev",
+      "memory_type": "fact",
+      "subject": "explain",
+      "lifecycle_state": "active",
+      "source_uri": "",
+      "source_hash": "",
+      "author_agent_id": "agent-a",
+      "origin_peer_id": "peer-a",
+      "authored_at_ms": 1742400000000
+    },
+    "score_breakdown": {
+      "matched_query": true,
+      "recall_eligible": true,
+      "lexical_bm25": -0.42,
+      "ranking_bucket": 0,
+      "trust_weight": 1.0,
+      "authored_at_ms": 1742400000000
+    },
+    "trust_summary": {
+      "signature_status": "valid",
+      "signature_detail": "",
+      "peer_trust_state": "allow",
+      "peer_trust_weight": 1.0,
+      "has_signing_key": true
+    },
+    "signal_summary": {
+      "store": {
+        "count": 1,
+        "sum": 1.0,
+        "latest_signal_at_ms": 1742400000000
+      }
+    }
   },
   "warnings": []
 }
@@ -422,4 +472,3 @@ Explicit downgrade rule:
 - tool names remain stable within MVP
 - additive optional fields are preferred
 - breaking schema changes require protocol/version bump
-
