@@ -30,18 +30,19 @@ type MemoryRef struct {
 }
 
 type StoreRequest struct {
-	MemoryID      string            `json:"memory_id,omitempty"`
-	Visibility    memory.Visibility `json:"visibility"`
-	Namespace     string            `json:"namespace"`
-	MemoryType    string            `json:"memory_type,omitempty"`
-	Scope         string            `json:"scope,omitempty"`
-	Subject       string            `json:"subject,omitempty"`
-	Body          string            `json:"body"`
-	SourceURI     string            `json:"source_uri,omitempty"`
-	SourceHash    string            `json:"source_hash,omitempty"`
-	AuthorAgentID string            `json:"author_agent_id,omitempty"`
-	OriginPeerID  string            `json:"origin_peer_id,omitempty"`
-	AuthoredAtMS  int64             `json:"authored_at_ms,omitempty"`
+	MemoryID      string                     `json:"memory_id,omitempty"`
+	Visibility    memory.Visibility          `json:"visibility"`
+	Namespace     string                     `json:"namespace"`
+	MemoryType    string                     `json:"memory_type,omitempty"`
+	Scope         string                     `json:"scope,omitempty"`
+	Subject       string                     `json:"subject,omitempty"`
+	Body          string                     `json:"body"`
+	SourceURI     string                     `json:"source_uri,omitempty"`
+	SourceHash    string                     `json:"source_hash,omitempty"`
+	AuthorAgentID string                     `json:"author_agent_id,omitempty"`
+	OriginPeerID  string                     `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64                      `json:"authored_at_ms,omitempty"`
+	ArtifactSpans []memory.ArtifactSpanInput `json:"artifact_spans,omitempty"`
 }
 
 type StoreResponse struct {
@@ -89,13 +90,13 @@ type SupersedeResponse struct {
 }
 
 type SignalRequest struct {
-	MemoryRef      MemoryRef `json:"memory_ref"`
-	SignalType     string    `json:"signal_type"`
-	Value          float64   `json:"value"`
-	Reason         string    `json:"reason,omitempty"`
-	AuthorAgentID  string    `json:"author_agent_id,omitempty"`
-	OriginPeerID   string    `json:"origin_peer_id,omitempty"`
-	AuthoredAtMS   int64     `json:"authored_at_ms,omitempty"`
+	MemoryRef     MemoryRef `json:"memory_ref"`
+	SignalType    string    `json:"signal_type"`
+	Value         float64   `json:"value"`
+	Reason        string    `json:"reason,omitempty"`
+	AuthorAgentID string    `json:"author_agent_id,omitempty"`
+	OriginPeerID  string    `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64     `json:"authored_at_ms,omitempty"`
 }
 
 type SignalResponse struct {
@@ -105,6 +106,11 @@ type SignalResponse struct {
 type ExplainRequest struct {
 	MemoryRef MemoryRef `json:"memory_ref"`
 	Query     string    `json:"query"`
+}
+
+type TraceDecisionRequest struct {
+	MemoryRef MemoryRef `json:"memory_ref"`
+	Depth     int       `json:"depth,omitempty"`
 }
 
 type ExplainScoreBreakdown struct {
@@ -131,10 +137,17 @@ type ExplainSignalSummary struct {
 }
 
 type ExplainResponse struct {
-	Provenance     memory.ExplainProvenance            `json:"provenance"`
-	ScoreBreakdown ExplainScoreBreakdown               `json:"score_breakdown"`
-	TrustSummary   ExplainTrustSummary                 `json:"trust_summary"`
-	SignalSummary  map[string]ExplainSignalSummary     `json:"signal_summary"`
+	Provenance     memory.ExplainProvenance        `json:"provenance"`
+	ScoreBreakdown ExplainScoreBreakdown           `json:"score_breakdown"`
+	TrustSummary   ExplainTrustSummary             `json:"trust_summary"`
+	SignalSummary  map[string]ExplainSignalSummary `json:"signal_summary"`
+}
+
+type TraceDecisionResponse struct {
+	Decision       memory.TraceDecisionNode       `json:"decision"`
+	Supports       []memory.TraceDecisionHop      `json:"supports"`
+	Contradictions []memory.TraceDecisionHop      `json:"contradictions"`
+	Artifacts      []memory.TraceDecisionArtifact `json:"artifacts"`
 }
 
 type SyncStatusPeer struct {
@@ -201,6 +214,7 @@ func (r StoreRequest) ToMemoryRequest() memory.StoreRequest {
 		AuthorAgentID: r.AuthorAgentID,
 		OriginPeerID:  r.OriginPeerID,
 		AuthoredAtMS:  r.AuthoredAtMS,
+		ArtifactSpans: r.ArtifactSpans,
 	}
 }
 
@@ -233,6 +247,14 @@ func (r ExplainRequest) ToMemoryRequest() memory.ExplainRequest {
 		MemorySpace: r.MemoryRef.MemorySpace,
 		MemoryID:    r.MemoryRef.MemoryID,
 		Query:       r.Query,
+	}
+}
+
+func (r TraceDecisionRequest) ToMemoryRequest() memory.TraceDecisionRequest {
+	return memory.TraceDecisionRequest{
+		MemorySpace: r.MemoryRef.MemorySpace,
+		MemoryID:    r.MemoryRef.MemoryID,
+		Depth:       r.Depth,
 	}
 }
 
@@ -289,6 +311,15 @@ func ExplainResponseFromResult(result memory.ExplainResult) ExplainResponse {
 			HasSigningKey:   result.TrustSummary.HasSigningKey,
 		},
 		SignalSummary: signalSummary,
+	}
+}
+
+func TraceDecisionResponseFromResult(result memory.TraceDecisionResult) TraceDecisionResponse {
+	return TraceDecisionResponse{
+		Decision:       result.Decision,
+		Supports:       result.Supports,
+		Contradictions: result.Contradictions,
+		Artifacts:      result.Artifacts,
 	}
 }
 

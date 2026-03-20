@@ -40,9 +40,9 @@ type memoryRefHTTPRequest struct {
 }
 
 type supersedeHTTPRequest struct {
-	OldMemoryID  string             `json:"old_memory_id"`
+	OldMemoryID  string               `json:"old_memory_id"`
 	OldMemoryRef memoryRefHTTPRequest `json:"old_memory_ref"`
-	Request      storeHTTPRequest   `json:"request"`
+	Request      storeHTTPRequest     `json:"request"`
 }
 
 type signalHTTPRequest struct {
@@ -60,6 +60,11 @@ type explainHTTPRequest struct {
 	Query     string               `json:"query"`
 }
 
+type traceDecisionHTTPRequest struct {
+	MemoryRef memoryRefHTTPRequest `json:"memory_ref"`
+	Depth     int                  `json:"depth"`
+}
+
 func TestToolsListIncludesStoreAndRecall(t *testing.T) {
 	resp := handle(config.Config{}, rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"})
 	result, ok := resp.Result.(map[string]any)
@@ -70,7 +75,7 @@ func TestToolsListIncludesStoreAndRecall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"memory.store", "memory.recall", "memory.supersede", "memory.signal", "memory.explain", "memory.sync_status"} {
+	for _, name := range []string{"memory.store", "memory.recall", "memory.supersede", "memory.signal", "memory.explain", "memory.trace_decision", "memory.sync_status"} {
 		if !strings.Contains(string(raw), name) {
 			t.Fatalf("tool list missing %s", name)
 		}
@@ -249,6 +254,61 @@ func TestMemorySyncStatusToolCallsHTTP(t *testing.T) {
 	}
 }
 
+func TestMemoryTraceDecisionToolCallsHTTP(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	var gotBody traceDecisionHTTPRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(apiEnvelope{
+			OK: true,
+			Data: map[string]any{
+				"decision":       map[string]any{"memory_id": "01HDECISION"},
+				"supports":       []any{},
+				"contradictions": []any{},
+				"artifacts":      []any{},
+			},
+			Warnings:  []string{},
+			RequestID: "req_trace",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	resp := handle(config.Config{API: config.API{BaseURL: server.URL}}, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params: mustJSON(t, map[string]any{
+			"name": "memory.trace_decision",
+			"arguments": map[string]any{
+				"memory_ref": map[string]any{"memory_space": "shared", "memory_id": "01HDECISION"},
+				"depth":      2,
+			},
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %#v", resp.Error)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %s, want POST", gotMethod)
+	}
+	if gotPath != "/v1/memory/trace_decision" {
+		t.Fatalf("path = %s, want /v1/memory/trace_decision", gotPath)
+	}
+	if gotBody.MemoryRef.MemoryID != "01HDECISION" || gotBody.Depth != 2 {
+		t.Fatalf("body = %#v", gotBody)
+	}
+	result := resp.Result.(map[string]any)
+	sc := result["structuredContent"].(map[string]any)
+	if sc["request_id"] != "req_trace" {
+		t.Fatalf("request_id = %v, want req_trace", sc["request_id"])
+	}
+}
+
 func TestMemorySupersedeToolCallsHTTP(t *testing.T) {
 	var gotMethod string
 	var gotPath string
@@ -262,8 +322,8 @@ func TestMemorySupersedeToolCallsHTTP(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(apiEnvelope{
 			OK: true,
 			Data: map[string]any{
-				"old_memory_ref": map[string]any{"memory_space": "shared", "memory_id": "01HOLD"},
-				"new_memory_ref": map[string]any{"memory_space": "shared", "memory_id": "01HNEW"},
+				"old_memory_ref":  map[string]any{"memory_space": "shared", "memory_id": "01HOLD"},
+				"new_memory_ref":  map[string]any{"memory_space": "shared", "memory_id": "01HNEW"},
 				"lifecycle_state": "superseded",
 			},
 			Warnings:  []string{"sync-pending"},
@@ -333,7 +393,7 @@ func TestMemorySignalToolCallsHTTP(t *testing.T) {
 		Params: mustJSON(t, map[string]any{
 			"name": "memory.signal",
 			"arguments": map[string]any{
-				"memory_ref": map[string]any{"memory_space": "shared", "memory_id": "01HMEM"},
+				"memory_ref":  map[string]any{"memory_space": "shared", "memory_id": "01HMEM"},
 				"signal_type": "confirm",
 				"value":       2.0,
 				"reason":      "re-verified",
@@ -372,10 +432,10 @@ func TestMemoryExplainToolCallsHTTP(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(apiEnvelope{
 			OK: true,
 			Data: map[string]any{
-				"provenance": map[string]any{"namespace": "team/dev"},
+				"provenance":      map[string]any{"namespace": "team/dev"},
 				"score_breakdown": map[string]any{"matched_query": true},
-				"trust_summary": map[string]any{"signature_status": "valid"},
-				"signal_summary": map[string]any{"store": map[string]any{"count": 1}},
+				"trust_summary":   map[string]any{"signature_status": "valid"},
+				"signal_summary":  map[string]any{"store": map[string]any{"count": 1}},
 			},
 			Warnings:  []string{},
 			RequestID: "req_explain",

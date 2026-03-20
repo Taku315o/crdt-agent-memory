@@ -54,18 +54,19 @@ type toolCallParams struct {
 }
 
 type storeToolRequest struct {
-	MemoryID      string `json:"memory_id,omitempty"`
-	Visibility    string `json:"visibility"`
-	Namespace     string `json:"namespace"`
-	MemoryType    string `json:"memory_type,omitempty"`
-	Scope         string `json:"scope,omitempty"`
-	Subject       string `json:"subject,omitempty"`
-	Body          string `json:"body"`
-	SourceURI     string `json:"source_uri,omitempty"`
-	SourceHash    string `json:"source_hash,omitempty"`
-	AuthorAgentID string `json:"author_agent_id,omitempty"`
-	OriginPeerID  string `json:"origin_peer_id,omitempty"`
-	AuthoredAtMS  int64  `json:"authored_at_ms,omitempty"`
+	MemoryID      string                    `json:"memory_id,omitempty"`
+	Visibility    string                    `json:"visibility"`
+	Namespace     string                    `json:"namespace"`
+	MemoryType    string                    `json:"memory_type,omitempty"`
+	Scope         string                    `json:"scope,omitempty"`
+	Subject       string                    `json:"subject,omitempty"`
+	Body          string                    `json:"body"`
+	SourceURI     string                    `json:"source_uri,omitempty"`
+	SourceHash    string                    `json:"source_hash,omitempty"`
+	AuthorAgentID string                    `json:"author_agent_id,omitempty"`
+	OriginPeerID  string                    `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64                     `json:"authored_at_ms,omitempty"`
+	ArtifactSpans []artifactSpanToolRequest `json:"artifact_spans,omitempty"`
 }
 
 type recallToolRequest struct {
@@ -101,6 +102,24 @@ type signalToolRequest struct {
 type explainToolRequest struct {
 	MemoryRef memoryRef `json:"memory_ref"`
 	Query     string    `json:"query"`
+}
+
+type traceDecisionToolRequest struct {
+	MemoryRef memoryRef `json:"memory_ref"`
+	Depth     int       `json:"depth,omitempty"`
+}
+
+type artifactSpanToolRequest struct {
+	ArtifactID  string `json:"artifact_id,omitempty"`
+	URI         string `json:"uri,omitempty"`
+	ContentHash string `json:"content_hash,omitempty"`
+	Title       string `json:"title,omitempty"`
+	MimeType    string `json:"mime_type,omitempty"`
+	StartOffset int    `json:"start_offset,omitempty"`
+	EndOffset   int    `json:"end_offset,omitempty"`
+	StartLine   int    `json:"start_line,omitempty"`
+	EndLine     int    `json:"end_line,omitempty"`
+	QuoteHash   string `json:"quote_hash,omitempty"`
 }
 
 var apiClient = &http.Client{Timeout: 10 * time.Second}
@@ -195,6 +214,24 @@ func toolDefinitions() []map[string]any {
 					"author_agent_id": map[string]any{"type": "string"},
 					"origin_peer_id":  map[string]any{"type": "string"},
 					"authored_at_ms":  map[string]any{"type": "integer"},
+					"artifact_spans": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"artifact_id":  map[string]any{"type": "string"},
+								"uri":          map[string]any{"type": "string"},
+								"content_hash": map[string]any{"type": "string"},
+								"title":        map[string]any{"type": "string"},
+								"mime_type":    map[string]any{"type": "string"},
+								"start_offset": map[string]any{"type": "integer"},
+								"end_offset":   map[string]any{"type": "integer"},
+								"start_line":   map[string]any{"type": "integer"},
+								"end_line":     map[string]any{"type": "integer"},
+								"quote_hash":   map[string]any{"type": "string"},
+							},
+						},
+					},
 				},
 				"required": []string{"visibility", "namespace", "body"},
 			},
@@ -265,12 +302,12 @@ func toolDefinitions() []map[string]any {
 						},
 						"required": []string{"memory_space", "memory_id"},
 					},
-					"signal_type":    map[string]any{"type": "string"},
-					"value":          map[string]any{"type": "number"},
-					"reason":         map[string]any{"type": "string"},
+					"signal_type":     map[string]any{"type": "string"},
+					"value":           map[string]any{"type": "number"},
+					"reason":          map[string]any{"type": "string"},
 					"author_agent_id": map[string]any{"type": "string"},
-					"origin_peer_id": map[string]any{"type": "string"},
-					"authored_at_ms": map[string]any{"type": "integer"},
+					"origin_peer_id":  map[string]any{"type": "string"},
+					"authored_at_ms":  map[string]any{"type": "integer"},
 				},
 				"required": []string{"memory_ref", "signal_type", "value"},
 			},
@@ -292,6 +329,25 @@ func toolDefinitions() []map[string]any {
 					"query": map[string]any{"type": "string"},
 				},
 				"required": []string{"memory_ref", "query"},
+			},
+		},
+		{
+			"name":        "memory.trace_decision",
+			"description": "trace supporting and contradicting memories plus linked artifacts",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"memory_ref": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"memory_space": map[string]any{"type": "string"},
+							"memory_id":    map[string]any{"type": "string"},
+						},
+						"required": []string{"memory_space", "memory_id"},
+					},
+					"depth": map[string]any{"type": "integer"},
+				},
+				"required": []string{"memory_ref"},
 			},
 		},
 		{
@@ -410,6 +466,19 @@ func callTool(cfg config.Config, params toolCallParams) (any, map[string]any) {
 			return nil, map[string]any{"code": -32602, "message": "query is required"}
 		}
 		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/explain", nil, args)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	case "memory.trace_decision":
+		var args traceDecisionToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if strings.TrimSpace(args.MemoryRef.MemorySpace) == "" || strings.TrimSpace(args.MemoryRef.MemoryID) == "" {
+			return nil, map[string]any{"code": -32602, "message": "memory_ref is required"}
+		}
+		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/trace_decision", nil, args)
 		if err != nil {
 			return nil, rpcErrorFromEnvelope(payload, err)
 		}

@@ -269,6 +269,125 @@ func TestRecallRanksValidBeforeMissingAndByTrustWeight(t *testing.T) {
 	}
 }
 
+func TestStorePersistsArtifactSpans(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+	memoryID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "artifact trace body",
+		Subject:       "artifact",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+		ArtifactSpans: []ArtifactSpanInput{
+			{
+				URI:       "file:///repo/main.go",
+				Title:     "main.go",
+				MimeType:  "text/x-go",
+				StartLine: 12,
+				EndLine:   18,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var artifactCount, spanCount, startLine int
+	if err := fixture.db.QueryRowContext(fixture.ctx, `SELECT COUNT(*) FROM artifact_refs`).Scan(&artifactCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.QueryRowContext(fixture.ctx, `SELECT COUNT(*) FROM artifact_spans WHERE memory_id = ?`, memoryID).Scan(&spanCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.QueryRowContext(fixture.ctx, `SELECT start_line FROM artifact_spans WHERE memory_id = ?`, memoryID).Scan(&startLine); err != nil {
+		t.Fatal(err)
+	}
+	if artifactCount != 1 {
+		t.Fatalf("artifact_refs count = %d, want 1", artifactCount)
+	}
+	if spanCount != 1 {
+		t.Fatalf("artifact_spans count = %d, want 1", spanCount)
+	}
+	if startLine != 12 {
+		t.Fatalf("start_line = %d, want 12", startLine)
+	}
+}
+
+func TestTraceDecisionIncludesArtifactsAndSkipsSuspendedEdges(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+	decisionID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "decision body",
+		Subject:       "decision",
+		MemoryType:    "decision",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+		ArtifactSpans: []ArtifactSpanInput{
+			{
+				URI:       "file:///repo/decision.md",
+				Title:     "decision.md",
+				StartLine: 1,
+				EndLine:   4,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	supportID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "support body",
+		Subject:       "support",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.db.ExecContext(fixture.ctx, `
+		INSERT INTO memory_edges(edge_id, from_memory_id, to_memory_id, relation_type, weight, origin_peer_id, authored_at_ms)
+		VALUES('edge-trace', ?, ?, 'supports', 1.0, 'peer-a', 1)
+	`, decisionID, supportID); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := fixture.svc.TraceDecision(fixture.ctx, TraceDecisionRequest{
+		MemorySpace: string(VisibilityShared),
+		MemoryID:    decisionID,
+		Depth:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Supports) != 1 {
+		t.Fatalf("supports count = %d, want 1", len(result.Supports))
+	}
+	if len(result.Artifacts) != 1 {
+		t.Fatalf("artifacts count = %d, want 1", len(result.Artifacts))
+	}
+
+	if _, err := fixture.db.ExecContext(fixture.ctx, `
+		INSERT INTO local_graph_suspensions(
+			entity_type, entity_id, memory_space, memory_id, reason, detail, first_seen_at_ms, last_seen_at_ms, resolved_at_ms
+		) VALUES('memory_edge', 'edge-trace', 'shared', ?, 'orphaned', '', 1, 1, 0)
+	`, decisionID); err != nil {
+		t.Fatal(err)
+	}
+	suspended, err := fixture.svc.TraceDecision(fixture.ctx, TraceDecisionRequest{
+		MemorySpace: string(VisibilityShared),
+		MemoryID:    decisionID,
+		Depth:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(suspended.Supports) != 0 {
+		t.Fatalf("supports count = %d, want 0 after suspension", len(suspended.Supports))
+	}
+}
+
 func TestSupersedeFailsWhenOldMemoryMissing(t *testing.T) {
 	fixture := newMemoryFixture(t, "peer-a")
 

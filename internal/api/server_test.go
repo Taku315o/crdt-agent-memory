@@ -390,6 +390,66 @@ func TestMemoryExplainContract(t *testing.T) {
 	}
 }
 
+func TestMemoryTraceDecisionContract(t *testing.T) {
+	fixture := newAPIFixture(t)
+	client := fixture.server.Client()
+	_, raw := doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/memory/store", StoreRequest{
+		Visibility:    memory.VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "trace decision body",
+		Subject:       "decision",
+		MemoryType:    "decision",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+		ArtifactSpans: []memory.ArtifactSpanInput{
+			{URI: "file:///repo/decision.md", Title: "decision.md", StartLine: 5, EndLine: 8},
+		},
+	})
+	var decisionEnvelope testEnvelope[StoreResponse]
+	if err := json.Unmarshal(raw, &decisionEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	_, raw = doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/memory/store", StoreRequest{
+		Visibility:    memory.VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "support body",
+		Subject:       "support",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+	var supportEnvelope testEnvelope[StoreResponse]
+	if err := json.Unmarshal(raw, &supportEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO memory_edges(edge_id, from_memory_id, to_memory_id, relation_type, weight, origin_peer_id, authored_at_ms)
+		VALUES('edge-api-trace', ?, ?, 'supports', 1.0, 'peer-a', 1)
+	`, decisionEnvelope.Data.MemoryRef.MemoryID, supportEnvelope.Data.MemoryRef.MemoryID); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, raw := doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/memory/trace_decision", TraceDecisionRequest{
+		MemoryRef: decisionEnvelope.Data.MemoryRef,
+		Depth:     1,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var envelope testEnvelope[TraceDecisionResponse]
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.OK {
+		t.Fatal("expected ok=true")
+	}
+	if len(envelope.Data.Supports) != 1 {
+		t.Fatalf("supports count = %d, want 1", len(envelope.Data.Supports))
+	}
+	if len(envelope.Data.Artifacts) != 1 {
+		t.Fatalf("artifacts count = %d, want 1", len(envelope.Data.Artifacts))
+	}
+}
+
 func TestSyncStatusContract(t *testing.T) {
 	fixture := newAPIFixture(t)
 	ctx := context.Background()

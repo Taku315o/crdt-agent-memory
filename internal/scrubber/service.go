@@ -3,7 +3,9 @@ package scrubber
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
+	"time"
 
 	"crdt-agent-memory/internal/signing"
 )
@@ -45,6 +47,14 @@ type ScrubberSummary struct {
 type Diagnostics struct {
 	TrustSummary    TrustSummary    `json:"trust_summary"`
 	ScrubberSummary ScrubberSummary `json:"scrubber_summary"`
+}
+
+type RepairReport struct {
+	DeletedQuarantineBatches  int `json:"deleted_quarantine_batches"`
+	SuspendedEdges            int `json:"suspended_edges"`
+	SuspendedSignals          int `json:"suspended_signals"`
+	ResolvedEdgeSuspensions   int `json:"resolved_edge_suspensions"`
+	ResolvedSignalSuspensions int `json:"resolved_signal_suspensions"`
 }
 
 func NewService(db *sql.DB, selfPeerID, selfPublicKeyHex string) *Service {
@@ -217,4 +227,139 @@ func appendSample(dst *[]string, id string) {
 		return
 	}
 	*dst = append(*dst, id)
+}
+
+func (s *Service) RunActiveRepair(ctx context.Context, quarantineTTL time.Duration) (RepairReport, error) {
+	if quarantineTTL <= 0 {
+		quarantineTTL = 7 * 24 * time.Hour
+	}
+	report := RepairReport{}
+	now := time.Now().UnixMilli()
+	cutoff := now - quarantineTTL.Milliseconds()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return report, err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `DELETE FROM sync_quarantine WHERE created_at_ms < ?`, cutoff)
+	if err != nil {
+		return report, err
+	}
+	if deleted, err := result.RowsAffected(); err == nil {
+		report.DeletedQuarantineBatches = int(deleted)
+	}
+
+	edgeMap, err := loadOrphanState(ctx, tx, `
+		SELECT
+			e.edge_id,
+			COALESCE(e.from_memory_id, e.to_memory_id, ''),
+			TRIM(
+				CASE WHEN src.memory_id IS NULL THEN 'missing_from ' ELSE '' END ||
+				CASE WHEN dst.memory_id IS NULL THEN 'missing_to' ELSE '' END
+			)
+		FROM memory_edges e
+		LEFT JOIN memory_nodes src ON src.memory_id = e.from_memory_id
+		LEFT JOIN memory_nodes dst ON dst.memory_id = e.to_memory_id
+		WHERE src.memory_id IS NULL OR dst.memory_id IS NULL
+	`)
+	if err != nil {
+		return report, err
+	}
+	if report.SuspendedEdges, err = upsertSuspensions(ctx, tx, "memory_edge", edgeMap, now); err != nil {
+		return report, err
+	}
+	if report.ResolvedEdgeSuspensions, err = resolveClearedSuspensions(ctx, tx, "memory_edge", edgeMap, now); err != nil {
+		return report, err
+	}
+
+	signalMap, err := loadOrphanState(ctx, tx, `
+		SELECT
+			s.signal_id,
+			s.memory_id,
+			'missing_memory'
+		FROM memory_signals s
+		LEFT JOIN memory_nodes n ON n.memory_id = s.memory_id
+		WHERE n.memory_id IS NULL
+	`)
+	if err != nil {
+		return report, err
+	}
+	if report.SuspendedSignals, err = upsertSuspensions(ctx, tx, "memory_signal", signalMap, now); err != nil {
+		return report, err
+	}
+	if report.ResolvedSignalSuspensions, err = resolveClearedSuspensions(ctx, tx, "memory_signal", signalMap, now); err != nil {
+		return report, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return report, err
+	}
+	return report, nil
+}
+
+type orphanState struct {
+	MemoryID string
+	Detail   string
+}
+
+func loadOrphanState(ctx context.Context, tx *sql.Tx, query string) (map[string]orphanState, error) {
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]orphanState{}
+	for rows.Next() {
+		var entityID, memoryID, detail string
+		if err := rows.Scan(&entityID, &memoryID, &detail); err != nil {
+			return nil, err
+		}
+		out[entityID] = orphanState{MemoryID: memoryID, Detail: strings.TrimSpace(detail)}
+	}
+	return out, rows.Err()
+}
+
+func upsertSuspensions(ctx context.Context, tx *sql.Tx, entityType string, states map[string]orphanState, now int64) (int, error) {
+	count := 0
+	for entityID, state := range states {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO local_graph_suspensions(
+				entity_type, entity_id, memory_space, memory_id, reason, detail, first_seen_at_ms, last_seen_at_ms, resolved_at_ms
+			) VALUES(?, ?, 'shared', ?, 'orphaned', ?, ?, ?, 0)
+			ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+				memory_id = excluded.memory_id,
+				reason = excluded.reason,
+				detail = excluded.detail,
+				last_seen_at_ms = excluded.last_seen_at_ms,
+				resolved_at_ms = 0
+		`, entityType, entityID, state.MemoryID, state.Detail, now, now); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+func resolveClearedSuspensions(ctx context.Context, tx *sql.Tx, entityType string, active map[string]orphanState, now int64) (int, error) {
+	query := `UPDATE local_graph_suspensions SET resolved_at_ms = ? WHERE entity_type = ? AND resolved_at_ms = 0`
+	args := []any{now, entityType}
+	if len(active) > 0 {
+		placeholders := make([]string, 0, len(active))
+		for entityID := range active {
+			placeholders = append(placeholders, "?")
+			args = append(args, entityID)
+		}
+		query += fmt.Sprintf(" AND entity_id NOT IN (%s)", strings.Join(placeholders, ","))
+	}
+	result, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return int(affected), nil
 }

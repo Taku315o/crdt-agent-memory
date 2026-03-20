@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	sharedCRRTables = []string{"artifact_refs", "memory_edges", "memory_nodes", "memory_signals"}
+	sharedCRRTables = []string{"artifact_refs", "artifact_spans", "memory_edges", "memory_nodes", "memory_signals"}
 	ErrLegacyDB     = errors.New("legacy fake-crr database detected; recreate the database from scratch")
 )
 
@@ -148,7 +148,6 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 	return meta, nil
 }
 
-
 func LoadMetadata(ctx context.Context, db *sql.DB) (Metadata, error) {
 	keys := []string{
 		"schema_hash",
@@ -225,6 +224,28 @@ func ensureSharedTriggers(ctx context.Context, tx *sql.Tx) error {
 		`CREATE TRIGGER IF NOT EXISTS trg_artifact_refs_sync_update AFTER UPDATE ON artifact_refs BEGIN
 			INSERT INTO sync_change_log(db_version, table_name, pk_hint, namespace, memory_id, changed_at_ms)
 			VALUES(crsql_db_version() + 1, 'artifact_refs', NEW.artifact_id, NEW.namespace, '', strftime('%s','now') * 1000);
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS trg_artifact_spans_sync_insert AFTER INSERT ON artifact_spans BEGIN
+			INSERT INTO sync_change_log(db_version, table_name, pk_hint, namespace, memory_id, changed_at_ms)
+			VALUES(
+				crsql_db_version() + 1,
+				'artifact_spans',
+				NEW.span_id,
+				COALESCE((SELECT namespace FROM memory_nodes WHERE memory_id = NEW.memory_id), (SELECT namespace FROM artifact_refs WHERE artifact_id = NEW.artifact_id), ''),
+				NEW.memory_id,
+				NEW.authored_at_ms
+			);
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS trg_artifact_spans_sync_update AFTER UPDATE ON artifact_spans BEGIN
+			INSERT INTO sync_change_log(db_version, table_name, pk_hint, namespace, memory_id, changed_at_ms)
+			VALUES(
+				crsql_db_version() + 1,
+				'artifact_spans',
+				NEW.span_id,
+				COALESCE((SELECT namespace FROM memory_nodes WHERE memory_id = NEW.memory_id), (SELECT namespace FROM artifact_refs WHERE artifact_id = NEW.artifact_id), ''),
+				NEW.memory_id,
+				strftime('%s','now') * 1000
+			);
 		END;`,
 	} {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {

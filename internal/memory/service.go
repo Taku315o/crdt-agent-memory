@@ -275,6 +275,43 @@ func (s *Service) Explain(ctx context.Context, req ExplainRequest) (ExplainResul
 	}, nil
 }
 
+func (s *Service) TraceDecision(ctx context.Context, req TraceDecisionRequest) (TraceDecisionResult, error) {
+	req.MemorySpace = strings.TrimSpace(req.MemorySpace)
+	req.MemoryID = strings.TrimSpace(req.MemoryID)
+	if req.MemorySpace != string(VisibilityShared) && req.MemorySpace != string(VisibilityPrivate) {
+		return TraceDecisionResult{}, errors.New("memory_space must be shared or private")
+	}
+	if req.MemoryID == "" {
+		return TraceDecisionResult{}, errors.New("memory_id is required")
+	}
+	if req.Depth <= 0 {
+		req.Depth = 1
+	}
+
+	decision, err := s.loadTraceDecisionNode(ctx, req.MemorySpace, req.MemoryID)
+	if err != nil {
+		return TraceDecisionResult{}, err
+	}
+
+	supports, contradictions, visited, err := s.walkTraceDecision(ctx, req)
+	if err != nil {
+		return TraceDecisionResult{}, err
+	}
+	visited[req.MemoryID] = struct{}{}
+
+	artifacts, err := s.loadTraceArtifacts(ctx, req.MemorySpace, visited)
+	if err != nil {
+		return TraceDecisionResult{}, err
+	}
+
+	return TraceDecisionResult{
+		Decision:       decision,
+		Supports:       supports,
+		Contradictions: contradictions,
+		Artifacts:      artifacts,
+	}, nil
+}
+
 func (s *Service) prepareStore(req StoreRequest) (StoreRequest, []byte, error) {
 	req, err := normalizeStoreRequest(req)
 	if err != nil {
@@ -315,7 +352,34 @@ func normalizeStoreRequest(req StoreRequest) (StoreRequest, error) {
 	if req.OriginPeerID == "" {
 		req.OriginPeerID = "peer/local"
 	}
+	for i := range req.ArtifactSpans {
+		if err := normalizeArtifactSpanInput(&req.ArtifactSpans[i]); err != nil {
+			return StoreRequest{}, err
+		}
+	}
 	return req, nil
+}
+
+func normalizeArtifactSpanInput(span *ArtifactSpanInput) error {
+	span.ArtifactID = strings.TrimSpace(span.ArtifactID)
+	span.URI = strings.TrimSpace(span.URI)
+	span.ContentHash = strings.TrimSpace(span.ContentHash)
+	span.Title = strings.TrimSpace(span.Title)
+	span.MimeType = strings.TrimSpace(span.MimeType)
+	span.QuoteHash = strings.TrimSpace(span.QuoteHash)
+	if span.ArtifactID == "" && span.URI == "" {
+		return errors.New("artifact_spans[].uri is required when artifact_id is empty")
+	}
+	if span.StartOffset < 0 || span.EndOffset < 0 || span.StartLine < 0 || span.EndLine < 0 {
+		return errors.New("artifact_spans offsets and lines must be greater than or equal to 0")
+	}
+	if span.EndOffset > 0 && span.EndOffset < span.StartOffset {
+		return errors.New("artifact_spans end_offset must be greater than or equal to start_offset")
+	}
+	if span.EndLine > 0 && span.EndLine < span.StartLine {
+		return errors.New("artifact_spans end_line must be greater than or equal to start_line")
+	}
+	return nil
 }
 
 func normalizeSignalRequest(req SignalRequest) (SignalRequest, error) {
@@ -389,6 +453,9 @@ func (s *Service) storeTx(ctx context.Context, tx *sql.Tx, req StoreRequest, sig
 	if err := insertInitialSignal(ctx, tx, req); err != nil {
 		return err
 	}
+	if err := insertArtifactSpans(ctx, tx, req); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO index_queue(queue_id, memory_space, memory_id, enqueued_at_ms)
 		VALUES(?, ?, ?, ?)
@@ -411,6 +478,70 @@ func insertInitialSignal(ctx context.Context, tx *sql.Tx, req StoreRequest) erro
 		VALUES(?, ?, ?, 'store', 1.0, 'initial write', ?)
 	`, uuid.NewString(), req.MemoryID, req.AuthorAgentID, req.AuthoredAtMS)
 	return err
+}
+
+func insertArtifactSpans(ctx context.Context, tx *sql.Tx, req StoreRequest) error {
+	if len(req.ArtifactSpans) == 0 {
+		return nil
+	}
+	for _, span := range req.ArtifactSpans {
+		artifactID := span.ArtifactID
+		if artifactID == "" {
+			artifactID = uuid.NewString()
+		}
+		switch req.Visibility {
+		case VisibilityShared:
+			if span.URI != "" {
+				if _, err := tx.ExecContext(ctx, `
+					INSERT INTO artifact_refs(artifact_id, namespace, uri, content_hash, title, mime_type, origin_peer_id, authored_at_ms)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+					ON CONFLICT(artifact_id) DO UPDATE SET
+						namespace = excluded.namespace,
+						uri = excluded.uri,
+						content_hash = excluded.content_hash,
+						title = excluded.title,
+						mime_type = excluded.mime_type,
+						origin_peer_id = excluded.origin_peer_id,
+						authored_at_ms = excluded.authored_at_ms
+				`, artifactID, req.Namespace, span.URI, span.ContentHash, span.Title, span.MimeType, req.OriginPeerID, req.AuthoredAtMS); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO artifact_spans(
+					span_id, artifact_id, memory_id, start_offset, end_offset, start_line, end_line, quote_hash, authored_at_ms
+				) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, uuid.NewString(), artifactID, req.MemoryID, span.StartOffset, span.EndOffset, span.StartLine, span.EndLine, span.QuoteHash, req.AuthoredAtMS); err != nil {
+				return err
+			}
+		case VisibilityPrivate:
+			if span.URI != "" {
+				if _, err := tx.ExecContext(ctx, `
+					INSERT INTO private_artifact_refs(artifact_id, local_namespace, uri, content_hash, title, mime_type, authored_at_ms)
+					VALUES(?, ?, ?, ?, ?, ?, ?)
+					ON CONFLICT(artifact_id) DO UPDATE SET
+						local_namespace = excluded.local_namespace,
+						uri = excluded.uri,
+						content_hash = excluded.content_hash,
+						title = excluded.title,
+						mime_type = excluded.mime_type,
+						authored_at_ms = excluded.authored_at_ms
+				`, artifactID, req.Namespace, span.URI, span.ContentHash, span.Title, span.MimeType, req.AuthoredAtMS); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO private_artifact_spans(
+					span_id, artifact_id, memory_id, start_offset, end_offset, start_line, end_line, quote_hash, authored_at_ms
+				) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, uuid.NewString(), artifactID, req.MemoryID, span.StartOffset, span.EndOffset, span.StartLine, span.EndLine, span.QuoteHash, req.AuthoredAtMS); err != nil {
+				return err
+			}
+		default:
+			return errors.New("visibility must be shared or private")
+		}
+	}
+	return nil
 }
 
 type explainRecord struct {
@@ -584,6 +715,17 @@ func signalTableName(memorySpace string) (string, error) {
 	}
 }
 
+func artifactSpanTableName(memorySpace string) (string, string, string, error) {
+	switch memorySpace {
+	case string(VisibilityShared):
+		return "artifact_spans", "artifact_refs", "namespace", nil
+	case string(VisibilityPrivate):
+		return "private_artifact_spans", "private_artifact_refs", "local_namespace", nil
+	default:
+		return "", "", "", errors.New("memory_space must be shared or private")
+	}
+}
+
 func memoryExistsTx(ctx context.Context, tx *sql.Tx, memorySpace, memoryID string) (bool, error) {
 	tableName := ""
 	switch memorySpace {
@@ -620,6 +762,210 @@ func rankingBucket(memorySpace, signatureStatus string, hasSignature bool) int {
 		}
 		return 1
 	}
+}
+
+func (s *Service) loadTraceDecisionNode(ctx context.Context, memorySpace, memoryID string) (TraceDecisionNode, error) {
+	tableName := "memory_nodes"
+	namespaceColumn := "namespace"
+	if memorySpace == string(VisibilityPrivate) {
+		tableName = "private_memory_nodes"
+		namespaceColumn = "local_namespace"
+	}
+
+	var node TraceDecisionNode
+	err := s.db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT
+			?,
+			memory_id,
+			%s,
+			memory_type,
+			subject,
+			body,
+			lifecycle_state,
+			source_uri,
+			source_hash,
+			origin_peer_id,
+			authored_at_ms
+		FROM %s
+		WHERE memory_id = ?
+	`, namespaceColumn, tableName), memorySpace, memoryID).Scan(
+		&node.MemorySpace,
+		&node.MemoryID,
+		&node.Namespace,
+		&node.MemoryType,
+		&node.Subject,
+		&node.Body,
+		&node.LifecycleState,
+		&node.SourceURI,
+		&node.SourceHash,
+		&node.OriginPeerID,
+		&node.AuthoredAtMS,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return TraceDecisionNode{}, ErrMemoryNotFound
+		}
+		return TraceDecisionNode{}, err
+	}
+	return node, nil
+}
+
+func (s *Service) walkTraceDecision(ctx context.Context, req TraceDecisionRequest) ([]TraceDecisionHop, []TraceDecisionHop, map[string]struct{}, error) {
+	supports := []TraceDecisionHop{}
+	contradictions := []TraceDecisionHop{}
+	visited := map[string]struct{}{req.MemoryID: {}}
+	frontier := []string{req.MemoryID}
+
+	for depth := 1; depth <= req.Depth && len(frontier) > 0; depth++ {
+		edges, err := s.loadTraceEdges(ctx, req.MemorySpace, frontier)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		nextFrontier := []string{}
+		for _, edge := range edges {
+			node, err := s.loadTraceDecisionNode(ctx, req.MemorySpace, edge.ToMemoryID)
+			if err != nil {
+				if errors.Is(err, ErrMemoryNotFound) {
+					continue
+				}
+				return nil, nil, nil, err
+			}
+			hop := TraceDecisionHop{
+				RelationType: edge.RelationType,
+				Depth:        depth,
+				Memory:       node,
+			}
+			if isContradictionRelation(edge.RelationType) {
+				contradictions = append(contradictions, hop)
+			} else {
+				supports = append(supports, hop)
+			}
+			if _, ok := visited[node.MemoryID]; ok {
+				continue
+			}
+			visited[node.MemoryID] = struct{}{}
+			nextFrontier = append(nextFrontier, node.MemoryID)
+		}
+		frontier = nextFrontier
+	}
+	return supports, contradictions, visited, nil
+}
+
+type traceEdge struct {
+	RelationType string
+	ToMemoryID   string
+}
+
+func (s *Service) loadTraceEdges(ctx context.Context, memorySpace string, fromMemoryIDs []string) ([]traceEdge, error) {
+	if len(fromMemoryIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, 0, len(fromMemoryIDs))
+	args := make([]any, 0, len(fromMemoryIDs))
+	for _, memoryID := range fromMemoryIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, memoryID)
+	}
+	query := fmt.Sprintf(`
+		SELECT e.relation_type, e.to_memory_id
+		FROM memory_edges e
+		LEFT JOIN local_graph_suspensions s
+		  ON s.entity_type = 'memory_edge'
+		 AND s.entity_id = e.edge_id
+		 AND s.resolved_at_ms = 0
+		WHERE e.from_memory_id IN (%s)
+		  AND s.entity_id IS NULL
+		ORDER BY e.authored_at_ms, e.edge_id
+	`, strings.Join(placeholders, ","))
+	if memorySpace == string(VisibilityPrivate) {
+		query = fmt.Sprintf(`
+			SELECT relation_type, to_memory_id
+			FROM private_memory_edges
+			WHERE from_memory_id IN (%s)
+			ORDER BY authored_at_ms, edge_id
+		`, strings.Join(placeholders, ","))
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []traceEdge{}
+	for rows.Next() {
+		var edge traceEdge
+		if err := rows.Scan(&edge.RelationType, &edge.ToMemoryID); err != nil {
+			return nil, err
+		}
+		out = append(out, edge)
+	}
+	return out, rows.Err()
+}
+
+func isContradictionRelation(relationType string) bool {
+	switch strings.TrimSpace(relationType) {
+	case "contradicts", "contradiction", "denies":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) loadTraceArtifacts(ctx context.Context, memorySpace string, memoryIDs map[string]struct{}) ([]TraceDecisionArtifact, error) {
+	if len(memoryIDs) == 0 {
+		return nil, nil
+	}
+	spanTable, refTable, namespaceColumn, err := artifactSpanTableName(memorySpace)
+	if err != nil {
+		return nil, err
+	}
+	placeholders := make([]string, 0, len(memoryIDs))
+	args := make([]any, 0, len(memoryIDs))
+	for memoryID := range memoryIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, memoryID)
+	}
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT
+			s.artifact_id,
+			s.memory_id,
+			r.uri,
+			r.title,
+			r.mime_type,
+			s.start_offset,
+			s.end_offset,
+			s.start_line,
+			s.end_line,
+			s.quote_hash
+		FROM %s s
+		JOIN %s r ON r.artifact_id = s.artifact_id
+		WHERE s.memory_id IN (%s)
+		ORDER BY r.%s, s.authored_at_ms, s.span_id
+	`, spanTable, refTable, strings.Join(placeholders, ","), namespaceColumn), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []TraceDecisionArtifact{}
+	for rows.Next() {
+		var item TraceDecisionArtifact
+		if err := rows.Scan(
+			&item.ArtifactID,
+			&item.MemoryID,
+			&item.URI,
+			&item.Title,
+			&item.MimeType,
+			&item.StartOffset,
+			&item.EndOffset,
+			&item.StartLine,
+			&item.EndLine,
+			&item.QuoteHash,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 func rankingBucketCase(memorySpaceExpr, signatureStatusExpr, signatureExpr string) string {

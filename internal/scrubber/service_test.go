@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"crdt-agent-memory/internal/memory"
 	"crdt-agent-memory/internal/policy"
@@ -98,5 +99,64 @@ func TestDiagnoseSummarizesTrustAndOrphans(t *testing.T) {
 	}
 	if diag.ScrubberSummary.OrphanSignals != 1 {
 		t.Fatalf("orphan_signals = %d, want 1", diag.ScrubberSummary.OrphanSignals)
+	}
+}
+
+func TestRunActiveRepairDeletesOldQuarantineAndSuspendsOrphans(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "repair.sqlite")
+	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
+		Path:         dbPath,
+		CRSQLitePath: testenv.CRSQLitePath(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := storage.RunMigrations(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO sync_quarantine(batch_id, peer_id, namespace, reason, payload_json, created_at_ms)
+		VALUES('old-batch', 'peer-a', 'team/dev', 'bad', '{}', ?)
+	`, time.Now().Add(-8*24*time.Hour).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO memory_edges(edge_id, from_memory_id, to_memory_id, relation_type, weight, origin_peer_id, authored_at_ms)
+		VALUES('edge-repair', 'missing-from', 'missing-to', 'supports', 1.0, 'peer-a', 1)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO memory_signals(signal_id, memory_id, peer_id, agent_id, signal_type, value, reason, authored_at_ms)
+		VALUES('signal-repair', 'missing-memory', 'peer-a', 'agent-a', 'confirm', 1.0, '', 1)
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := NewService(db, "", "").RunActiveRepair(ctx, 7*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.DeletedQuarantineBatches != 1 {
+		t.Fatalf("deleted_quarantine_batches = %d, want 1", report.DeletedQuarantineBatches)
+	}
+	if report.SuspendedEdges != 1 {
+		t.Fatalf("suspended_edges = %d, want 1", report.SuspendedEdges)
+	}
+	if report.SuspendedSignals != 1 {
+		t.Fatalf("suspended_signals = %d, want 1", report.SuspendedSignals)
+	}
+
+	var activeSuspensions int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM local_graph_suspensions WHERE resolved_at_ms = 0
+	`).Scan(&activeSuspensions); err != nil {
+		t.Fatal(err)
+	}
+	if activeSuspensions != 2 {
+		t.Fatalf("active suspensions = %d, want 2", activeSuspensions)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"crdt-agent-memory/internal/api"
 	"crdt-agent-memory/internal/config"
@@ -93,11 +94,36 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		go runScrubberWorker(ctx, server.Scrubber)
 		log.Printf("memoryd listening on %s", cfg.API.ListenAddr)
 		if err := http.ListenAndServe(cfg.API.ListenAddr, server.Handler()); err != nil {
 			log.Fatal(err)
 		}
 	default:
 		log.Fatalf("unsupported cmd: %s", command)
+	}
+}
+
+func runScrubberWorker(ctx context.Context, svc *scrubber.Service) {
+	if svc == nil {
+		return
+	}
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		report, err := svc.RunActiveRepair(ctx, 7*24*time.Hour)
+		if err != nil {
+			log.Printf("scrubber repair failed: %v", err)
+		} else if report.DeletedQuarantineBatches > 0 || report.SuspendedEdges > 0 || report.SuspendedSignals > 0 || report.ResolvedEdgeSuspensions > 0 || report.ResolvedSignalSuspensions > 0 {
+			log.Printf(
+				"scrubber repair deleted_quarantine=%d suspended_edges=%d suspended_signals=%d resolved_edges=%d resolved_signals=%d",
+				report.DeletedQuarantineBatches,
+				report.SuspendedEdges,
+				report.SuspendedSignals,
+				report.ResolvedEdgeSuspensions,
+				report.ResolvedSignalSuspensions,
+			)
+		}
+		<-ticker.C
 	}
 }
