@@ -163,9 +163,10 @@ sqlite-vec が使えないとき
     LIMIT <limit>
 ```
 
-- sqlite-vec が使える場合は semantic retrieval を優先し、結果が空なら FTS5 にフォールバックする。
+- 現行実装は lexical と semantic を 1 つのスコアに融合していない。sqlite-vec が使える場合は semantic candidate を優先し、足りない分を FTS5 で補完する。
 - `recall_memory_view` は `memory_nodes` と `private_memory_nodes` を `UNION ALL` したビュー。
 - `IncludePrivate=false`（デフォルト）の場合、shared のみが返ります。
+- `ranking_bucket` / `trust_weight` / `authored_at_ms` は現行の順位付けに使われるが、graph proximity と artifact-based rerank はまだ Recall には入っていない。
 
 ---
 

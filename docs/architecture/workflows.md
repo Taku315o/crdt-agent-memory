@@ -195,24 +195,24 @@ sequenceDiagram
     API->>DB: query recall_memory_view
     API->>DB: run FTS5 candidate search
     API->>DB: run sqlite-vec candidate search
-    API->>DB: fetch shared/private edges and signals
-    API->>DB: fetch shared/private artifact refs and spans
-    API->>API: hybrid rerank
-    API-->>Agent: ranked memories + sources + contradictions
+    API->>DB: apply trust/signature ordering
+    API-->>Agent: ranked memories + provenance hints
 ```
 
 ranking inputs:
 
-- lexical relevance
-- semantic similarity
-- graph proximity
-- temporal relevance
-- trust weight
+- current: semantic similarity or lexical relevance
+- current: trust weight
+- current: signature bucket
+- current: authored_at_ms
+- planned: graph proximity
+- planned: artifact-based reranking
 
 重要:
 
 - `authored_at_ms` は ranking hint と display 用であり、sync ordering truth ではない
 - remote peer への live query は行わない
+- graph / artifact 情報は `TraceDecision` で追跡できるが、`Recall` の現行 rerank にはまだ接続されていない
 
 ## 7. Workflow F: Memory Correction By Supersede
 

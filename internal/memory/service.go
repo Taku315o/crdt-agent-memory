@@ -49,6 +49,8 @@ func (s *Service) Store(ctx context.Context, req StoreRequest) (string, error) {
 	return req.MemoryID, nil
 }
 
+// Recall is vector-first when sqlite-vec is available, with FTS backfill.
+// It is not yet a fused lexical+semantic+graph reranker.
 func (s *Service) Recall(ctx context.Context, req RecallRequest) ([]RecallResult, error) {
 	req.Query = strings.TrimSpace(req.Query)
 	if req.Query == "" {
