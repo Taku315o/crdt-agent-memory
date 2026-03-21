@@ -144,29 +144,30 @@ Recall(ctx, RecallRequest) ([]RecallResult, error)
 #### 動作フロー
 
 ```
-sqlite-vec が使えるとき
+semantic candidate search
   memory_embedding_vectors（vec0）
   WHERE embedding MATCH vec_f32(<query embedding>)
   [AND memory_space = 'shared']     ← IncludePrivate=false のとき
-  JOIN recall_memory_view
   [AND namespace IN (...)]          ← Namespaces 指定のとき
-  ORDER BY ranking_bucket, trust_weight DESC, distance, authored_at_ms DESC
-  LIMIT <limit>
 
-sqlite-vec が使えないとき
-  recall_memory_view（shared + private の UNION ALL ビュー）
-    JOIN memory_fts（FTS5 仮想テーブル）
-    WHERE memory_fts MATCH <query>
-    [AND memory_space = 'shared']   ← IncludePrivate=false のとき
-    [AND namespace IN (...)]        ← Namespaces 指定のとき
-    ORDER BY bm25(memory_fts), authored_at_ms DESC
-    LIMIT <limit>
+lexical candidate search
+  memory_fts（FTS5 仮想テーブル）
+  WHERE memory_fts MATCH <query>
+  [AND memory_space = 'shared']     ← IncludePrivate=false のとき
+  [AND namespace IN (...)]          ← Namespaces 指定のとき
+
+candidate merge
+  JOIN recall_memory_view
+  JOIN memory_verification_state / peer_policies
+  JOIN memory_edges / artifact_spans aggregate
+  ORDER BY bucket, trust, semantic+lexical source score, graph boost, artifact boost, authored_at_ms DESC
+  LIMIT <limit>
 ```
 
-- 現行実装は lexical と semantic を 1 つのスコアに融合していない。sqlite-vec が使える場合は semantic candidate を優先し、足りない分を FTS5 で補完する。
+- 現行実装は semantic candidates と lexical candidates を併用し、trust/signature bucket, graph connectivity, artifact spans, recency を加えて再ランキングする。
 - `recall_memory_view` は `memory_nodes` と `private_memory_nodes` を `UNION ALL` したビュー。
 - `IncludePrivate=false`（デフォルト）の場合、shared のみが返ります。
-- `ranking_bucket` / `trust_weight` / `authored_at_ms` は現行の順位付けに使われるが、graph proximity と artifact-based rerank はまだ Recall には入っていない。
+- `ranking_bucket` / `trust_weight` / `authored_at_ms` は順位付けに使われる。
 
 ---
 

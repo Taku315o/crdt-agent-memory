@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"encoding/json"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -49,8 +50,9 @@ func (s *Service) Store(ctx context.Context, req StoreRequest) (string, error) {
 	return req.MemoryID, nil
 }
 
-// Recall is vector-first when sqlite-vec is available, with FTS backfill.
-// It is not yet a fused lexical+semantic+graph reranker.
+// Recall is a fused lexical+semantic+trust+graph+artifact reranker when
+// sqlite-vec is available, and degrades to lexical+trust+graph+artifact when
+// it is not.
 func (s *Service) Recall(ctx context.Context, req RecallRequest) ([]RecallResult, error) {
 	req.Query = strings.TrimSpace(req.Query)
 	if req.Query == "" {
@@ -60,44 +62,11 @@ func (s *Service) Recall(ctx context.Context, req RecallRequest) ([]RecallResult
 	if limit <= 0 {
 		limit = 10
 	}
-	if ok, err := s.vectorIndexEnabled(ctx); err != nil {
+	vectorEnabled, err := s.vectorIndexEnabled(ctx)
+	if err != nil {
 		return nil, err
-	} else if ok {
-		results, err := s.recallWithVector(ctx, req, limit)
-		if err != nil {
-			return nil, err
-		}
-		if len(results) >= limit {
-			return results[:limit], nil
-		}
-		fallback, err := s.recallWithFTS(ctx, req, limit)
-		if err != nil {
-			return nil, err
-		}
-		if len(results) == 0 {
-			return fallback, nil
-		}
-		seen := make(map[string]struct{}, len(results))
-		out := make([]RecallResult, 0, limit)
-		for _, item := range results {
-			key := item.MemorySpace + ":" + item.MemoryID
-			seen[key] = struct{}{}
-			out = append(out, item)
-		}
-		for _, item := range fallback {
-			if len(out) >= limit {
-				break
-			}
-			key := item.MemorySpace + ":" + item.MemoryID
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			out = append(out, item)
-		}
-		return out, nil
 	}
-	return s.recallWithFTS(ctx, req, limit)
+	return s.recallHybrid(ctx, req, limit, vectorEnabled)
 }
 
 func (s *Service) recallWithVector(ctx context.Context, req RecallRequest, limit int) ([]RecallResult, error) {
@@ -266,6 +235,553 @@ func (s *Service) scanRecallRows(ctx context.Context, query string, args ...any)
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+type recallKey struct {
+	MemorySpace string
+	MemoryID    string
+}
+
+type recallCandidate struct {
+	key             recallKey
+	semanticRank    int
+	lexicalRank     int
+	semanticDistance float64
+	lexicalBM25     float64
+}
+
+type recallCandidateRow struct {
+	key recallKey
+	RecallResult
+	SignatureStatus string
+	HasSignature    bool
+	TrustWeight     float64
+	SemanticRank    int
+	LexicalRank     int
+	SemanticDistance float64
+	LexicalBM25     float64
+}
+
+type recallGraphStat struct {
+	EdgeCount       int
+	SupportWeight   float64
+	ContradictWeight float64
+}
+
+type recallArtifactStat struct {
+	SpanCount  int
+	QuoteCount int
+}
+
+type scoredRecallRow struct {
+	row        recallCandidateRow
+	score      float64
+	bucket     int
+	trustWeight float64
+}
+
+func (s *Service) recallHybrid(ctx context.Context, req RecallRequest, limit int, vectorEnabled bool) ([]RecallResult, error) {
+	candidateLimit := limit * 10
+	if candidateLimit < 50 {
+		candidateLimit = 50
+	}
+	if candidateLimit < limit {
+		candidateLimit = limit
+	}
+
+	candidates := make(map[recallKey]*recallCandidate)
+
+	if vectorEnabled {
+		vectorCandidates, err := s.collectVectorRecallCandidates(ctx, req, candidateLimit)
+		if err != nil {
+			return nil, err
+		}
+		mergeRecallCandidates(candidates, vectorCandidates)
+	}
+
+	lexicalCandidates, err := s.collectFTSRecallCandidates(ctx, req, candidateLimit)
+	if err != nil {
+		return nil, err
+	}
+	mergeRecallCandidates(candidates, lexicalCandidates)
+
+	if len(candidates) == 0 {
+		return []RecallResult{}, nil
+	}
+
+	candidateRows := make([]recallCandidate, 0, len(candidates))
+	idsBySpace := map[string][]string{}
+	for _, candidate := range candidates {
+		candidateRows = append(candidateRows, *candidate)
+		idsBySpace[candidate.key.MemorySpace] = append(idsBySpace[candidate.key.MemorySpace], candidate.key.MemoryID)
+	}
+
+	rows, err := s.loadRecallCandidateRows(ctx, candidateRows)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return []RecallResult{}, nil
+	}
+
+	graphStats, err := s.loadRecallGraphStats(ctx, idsBySpace)
+	if err != nil {
+		return nil, err
+	}
+	artifactStats, err := s.loadRecallArtifactStats(ctx, idsBySpace)
+	if err != nil {
+		return nil, err
+	}
+
+	nowMS := time.Now().UnixMilli()
+	scored := make([]scoredRecallRow, 0, len(rows))
+	for _, row := range rows {
+		key := row.key
+		graph := graphStats[key]
+		artifact := artifactStats[key]
+		bucket := rankingBucket(row.MemorySpace, row.SignatureStatus, row.HasSignature)
+		score := recallScore(row, graph, artifact, nowMS)
+		scored = append(scored, scoredRecallRow{
+			row:         row,
+			score:       score,
+			bucket:      bucket,
+			trustWeight: row.TrustWeight,
+		})
+	}
+
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		if scored[i].bucket != scored[j].bucket {
+			return scored[i].bucket < scored[j].bucket
+		}
+		if scored[i].trustWeight != scored[j].trustWeight {
+			return scored[i].trustWeight > scored[j].trustWeight
+		}
+		if scored[i].row.AuthoredAtMS != scored[j].row.AuthoredAtMS {
+			return scored[i].row.AuthoredAtMS > scored[j].row.AuthoredAtMS
+		}
+		if scored[i].row.MemorySpace != scored[j].row.MemorySpace {
+			return scored[i].row.MemorySpace < scored[j].row.MemorySpace
+		}
+		return scored[i].row.MemoryID < scored[j].row.MemoryID
+	})
+
+	if len(scored) > limit {
+		scored = scored[:limit]
+	}
+
+	out := make([]RecallResult, 0, len(scored))
+	for _, item := range scored {
+		out = append(out, item.row.RecallResult)
+	}
+	return out, nil
+}
+
+func mergeRecallCandidates(dst map[recallKey]*recallCandidate, src []recallCandidate) {
+	for _, candidate := range src {
+		if existing, ok := dst[candidate.key]; ok {
+			if candidate.semanticRank > 0 && (existing.semanticRank == 0 || candidate.semanticRank < existing.semanticRank) {
+				existing.semanticRank = candidate.semanticRank
+				existing.semanticDistance = candidate.semanticDistance
+			}
+			if candidate.lexicalRank > 0 && (existing.lexicalRank == 0 || candidate.lexicalRank < existing.lexicalRank) {
+				existing.lexicalRank = candidate.lexicalRank
+				existing.lexicalBM25 = candidate.lexicalBM25
+			}
+			continue
+		}
+		copy := candidate
+		dst[candidate.key] = &copy
+	}
+}
+
+func (s *Service) collectVectorRecallCandidates(ctx context.Context, req RecallRequest, limit int) ([]recallCandidate, error) {
+	vector, err := embedding.FromText(ctx, req.Query)
+	if err != nil {
+		return nil, err
+	}
+	vectorJSON, err := json.Marshal(vector)
+	if err != nil {
+		return nil, err
+	}
+
+	query := `
+		SELECT c.memory_space, c.memory_id, c.distance
+		FROM memory_embedding_vectors c
+		JOIN recall_memory_view v
+		  ON v.memory_space = c.memory_space
+		 AND v.memory_id = c.memory_id
+		WHERE c.embedding MATCH vec_f32(?)
+		  AND k = ?
+	`
+	args := []any{string(vectorJSON), limit}
+	if !req.IncludePrivate {
+		query += ` AND v.memory_space = 'shared'`
+	}
+	if len(req.Namespaces) > 0 {
+		placeholders := make([]string, 0, len(req.Namespaces))
+		for _, ns := range req.Namespaces {
+			placeholders = append(placeholders, "?")
+			args = append(args, ns)
+		}
+		query += fmt.Sprintf(" AND v.namespace IN (%s)", strings.Join(placeholders, ","))
+	}
+	query += `
+		ORDER BY c.distance
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]recallCandidate, 0, limit)
+	rank := 0
+	for rows.Next() {
+		rank++
+		var item recallCandidate
+		item.semanticRank = rank
+		if err := rows.Scan(&item.key.MemorySpace, &item.key.MemoryID, &item.semanticDistance); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Service) collectFTSRecallCandidates(ctx context.Context, req RecallRequest, limit int) ([]recallCandidate, error) {
+	query := `
+		SELECT memory_space, memory_id, bm25(memory_fts)
+		FROM memory_fts
+		WHERE memory_fts MATCH ?
+	`
+	args := []any{req.Query}
+	if !req.IncludePrivate {
+		query += ` AND memory_space = 'shared'`
+	}
+	if len(req.Namespaces) > 0 {
+		placeholders := make([]string, 0, len(req.Namespaces))
+		for _, ns := range req.Namespaces {
+			placeholders = append(placeholders, "?")
+			args = append(args, ns)
+		}
+		query += fmt.Sprintf(" AND namespace IN (%s)", strings.Join(placeholders, ","))
+	}
+	query += `
+		ORDER BY bm25(memory_fts)
+		LIMIT ?
+	`
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]recallCandidate, 0, limit)
+	rank := 0
+	for rows.Next() {
+		rank++
+		var item recallCandidate
+		item.lexicalRank = rank
+		if err := rows.Scan(&item.key.MemorySpace, &item.key.MemoryID, &item.lexicalBM25); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Service) loadRecallCandidateRows(ctx context.Context, candidates []recallCandidate) ([]recallCandidateRow, error) {
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	cte, args := buildRecallCandidateCTE(candidates)
+	query := cte + `
+		SELECT
+			v.memory_space,
+			v.memory_id,
+			v.namespace,
+			v.memory_type,
+			v.subject,
+			v.body,
+			v.lifecycle_state,
+			v.authored_at_ms,
+			v.source_uri,
+			v.source_hash,
+			v.origin_peer_id,
+			COALESCE(vs.signature_status, ''),
+			CASE WHEN v.memory_space = 'shared' AND length(COALESCE(mn.author_signature, X'')) > 0 THEN 1 ELSE 0 END,
+			COALESCE(pp.trust_weight, 1.0),
+			c.semantic_rank,
+			c.lexical_rank,
+			c.semantic_distance,
+			c.lexical_bm25
+		FROM candidate c
+		JOIN recall_memory_view v
+		  ON v.memory_space = c.memory_space
+		 AND v.memory_id = c.memory_id
+		LEFT JOIN memory_verification_state vs
+		  ON vs.memory_space = v.memory_space
+		 AND vs.memory_id = v.memory_id
+		LEFT JOIN memory_nodes mn
+		  ON v.memory_space = 'shared'
+		 AND mn.memory_id = v.memory_id
+		LEFT JOIN peer_policies pp
+		  ON v.memory_space = 'shared'
+		 AND pp.peer_id = v.origin_peer_id
+		WHERE COALESCE(vs.signature_status, '') != ?
+	`
+	args = append(args, SignatureStatusInvalidSignature)
+	query += `
+		ORDER BY v.memory_space, v.memory_id
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]recallCandidateRow, 0, len(candidates))
+	for rows.Next() {
+		var item recallCandidateRow
+		var hasSignature int
+		if err := rows.Scan(
+			&item.RecallResult.MemorySpace,
+			&item.RecallResult.MemoryID,
+			&item.RecallResult.Namespace,
+			&item.RecallResult.MemoryType,
+			&item.RecallResult.Subject,
+			&item.RecallResult.Body,
+			&item.RecallResult.LifecycleState,
+			&item.RecallResult.AuthoredAtMS,
+			&item.RecallResult.SourceURI,
+			&item.RecallResult.SourceHash,
+			&item.RecallResult.OriginPeerID,
+			&item.SignatureStatus,
+			&hasSignature,
+			&item.TrustWeight,
+			&item.SemanticRank,
+			&item.LexicalRank,
+			&item.SemanticDistance,
+			&item.LexicalBM25,
+		); err != nil {
+			return nil, err
+		}
+		item.key = recallKey{MemorySpace: item.MemorySpace, MemoryID: item.MemoryID}
+		item.HasSignature = hasSignature == 1
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func buildRecallCandidateCTE(candidates []recallCandidate) (string, []any) {
+	var sb strings.Builder
+	sb.WriteString(`
+		WITH candidate(memory_space, memory_id, semantic_rank, lexical_rank, semantic_distance, lexical_bm25) AS (
+			VALUES
+	`)
+	args := make([]any, 0, len(candidates)*6)
+	for i, candidate := range candidates {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString("(?, ?, ?, ?, ?, ?)")
+		args = append(args,
+			candidate.key.MemorySpace,
+			candidate.key.MemoryID,
+			candidate.semanticRank,
+			candidate.lexicalRank,
+			candidate.semanticDistance,
+			candidate.lexicalBM25,
+		)
+	}
+	sb.WriteString(`
+			)
+		`)
+	return sb.String(), args
+}
+
+func (s *Service) loadRecallGraphStats(ctx context.Context, idsBySpace map[string][]string) (map[recallKey]recallGraphStat, error) {
+	out := make(map[recallKey]recallGraphStat)
+	for memorySpace, memoryIDs := range idsBySpace {
+		if len(memoryIDs) == 0 {
+			continue
+		}
+		stats, err := s.loadRecallGraphStatsForSpace(ctx, memorySpace, memoryIDs)
+		if err != nil {
+			return nil, err
+		}
+		for key, stat := range stats {
+			out[key] = stat
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) loadRecallGraphStatsForSpace(ctx context.Context, memorySpace string, memoryIDs []string) (map[recallKey]recallGraphStat, error) {
+	tableName := "memory_edges"
+	if memorySpace == string(VisibilityPrivate) {
+		tableName = "private_memory_edges"
+	}
+	placeholders := make([]string, 0, len(memoryIDs))
+	args := make([]any, 0, len(memoryIDs)*2)
+	for _, memoryID := range memoryIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, memoryID)
+	}
+	args = append(args, append([]any(nil), args...)...)
+
+	query := fmt.Sprintf(`
+		SELECT memory_id, SUM(edge_count), SUM(support_weight), SUM(contradict_weight)
+		FROM (
+			SELECT
+				from_memory_id AS memory_id,
+				COUNT(*) AS edge_count,
+				SUM(CASE WHEN COALESCE(relation_type, '') IN ('contradicts', 'contradiction', 'denies') THEN 0 ELSE weight END) AS support_weight,
+				SUM(CASE WHEN COALESCE(relation_type, '') IN ('contradicts', 'contradiction', 'denies') THEN weight ELSE 0 END) AS contradict_weight
+			FROM %s
+			WHERE from_memory_id IN (%s)
+			GROUP BY from_memory_id
+			UNION ALL
+			SELECT
+				to_memory_id AS memory_id,
+				COUNT(*) AS edge_count,
+				SUM(CASE WHEN COALESCE(relation_type, '') IN ('contradicts', 'contradiction', 'denies') THEN 0 ELSE weight END) AS support_weight,
+				SUM(CASE WHEN COALESCE(relation_type, '') IN ('contradicts', 'contradiction', 'denies') THEN weight ELSE 0 END) AS contradict_weight
+			FROM %s
+			WHERE to_memory_id IN (%s)
+			GROUP BY to_memory_id
+		)
+		GROUP BY memory_id
+	`, tableName, strings.Join(placeholders, ","), tableName, strings.Join(placeholders, ","))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[recallKey]recallGraphStat)
+	for rows.Next() {
+		var memoryID string
+		var stat recallGraphStat
+		if err := rows.Scan(&memoryID, &stat.EdgeCount, &stat.SupportWeight, &stat.ContradictWeight); err != nil {
+			return nil, err
+		}
+		out[recallKey{MemorySpace: memorySpace, MemoryID: memoryID}] = stat
+	}
+	return out, rows.Err()
+}
+
+func (s *Service) loadRecallArtifactStats(ctx context.Context, idsBySpace map[string][]string) (map[recallKey]recallArtifactStat, error) {
+	out := make(map[recallKey]recallArtifactStat)
+	for memorySpace, memoryIDs := range idsBySpace {
+		if len(memoryIDs) == 0 {
+			continue
+		}
+		stats, err := s.loadRecallArtifactStatsForSpace(ctx, memorySpace, memoryIDs)
+		if err != nil {
+			return nil, err
+		}
+		for key, stat := range stats {
+			out[key] = stat
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) loadRecallArtifactStatsForSpace(ctx context.Context, memorySpace string, memoryIDs []string) (map[recallKey]recallArtifactStat, error) {
+	tableName := "artifact_spans"
+	if memorySpace == string(VisibilityPrivate) {
+		tableName = "private_artifact_spans"
+	}
+	placeholders := make([]string, 0, len(memoryIDs))
+	args := make([]any, 0, len(memoryIDs))
+	for _, memoryID := range memoryIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, memoryID)
+	}
+	query := fmt.Sprintf(`
+		SELECT memory_id, COUNT(*), SUM(CASE WHEN length(COALESCE(quote_hash, X'')) > 0 THEN 1 ELSE 0 END)
+		FROM %s
+		WHERE memory_id IN (%s)
+		GROUP BY memory_id
+	`, tableName, strings.Join(placeholders, ","))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[recallKey]recallArtifactStat)
+	for rows.Next() {
+		var memoryID string
+		var stat recallArtifactStat
+		if err := rows.Scan(&memoryID, &stat.SpanCount, &stat.QuoteCount); err != nil {
+			return nil, err
+		}
+		out[recallKey{MemorySpace: memorySpace, MemoryID: memoryID}] = stat
+	}
+	return out, rows.Err()
+}
+
+func recallScore(row recallCandidateRow, graph recallGraphStat, artifact recallArtifactStat, nowMS int64) float64 {
+	bucket := rankingBucket(row.MemorySpace, row.SignatureStatus, row.HasSignature)
+	score := float64(3-bucket) * 1000.0
+	score += row.TrustWeight * 100.0
+	score += recallSourceScore(row) * 20.0
+	score += recallGraphScore(graph) * 40.0
+	score += recallArtifactScore(artifact) * 40.0
+	score += recallRecencyScore(row.AuthoredAtMS, nowMS) * 5.0
+	return score
+}
+
+func recallSourceScore(row recallCandidateRow) float64 {
+	score := 0.0
+	if row.SemanticRank > 0 {
+		score += 0.6 / float64(row.SemanticRank)
+	}
+	if row.LexicalRank > 0 {
+		score += 0.4 / float64(row.LexicalRank)
+	}
+	return score
+}
+
+func recallGraphScore(stat recallGraphStat) float64 {
+	score := float64(stat.EdgeCount)*0.15 + stat.SupportWeight*0.20 - stat.ContradictWeight*0.25
+	if score < 0 {
+		return 0
+	}
+	if score > 1 {
+		return 1
+	}
+	return score
+}
+
+func recallArtifactScore(stat recallArtifactStat) float64 {
+	score := float64(stat.SpanCount)*0.25 + float64(stat.QuoteCount)*0.15
+	if score > 1 {
+		return 1
+	}
+	return score
+}
+
+func recallRecencyScore(authoredAtMS, nowMS int64) float64 {
+	if authoredAtMS <= 0 || nowMS <= 0 {
+		return 0
+	}
+	if authoredAtMS > nowMS {
+		return 1
+	}
+	ageHours := float64(nowMS-authoredAtMS) / float64(time.Hour/time.Millisecond)
+	return 1 / (1 + ageHours/24.0)
 }
 
 func (s *Service) vectorIndexEnabled(ctx context.Context) (bool, error) {

@@ -335,6 +335,127 @@ func TestRecallRanksValidBeforeMissingAndByTrustWeight(t *testing.T) {
 	}
 }
 
+func TestRecallBoostsArtifactBackedMemory(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+
+	plainID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "artifact boost query",
+		Subject:       "plain",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+		AuthoredAtMS:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "artifact boost query",
+		Subject:       "artifact",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+		AuthoredAtMS:  1,
+		ArtifactSpans: []ArtifactSpanInput{
+			{
+				URI:       "file:///repo/main.go",
+				Title:     "main.go",
+				StartLine: 12,
+				EndLine:   18,
+				QuoteHash: "quote-1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := fixture.svc.Recall(fixture.ctx, RecallRequest{
+		Query:      "artifact boost query",
+		Namespaces: []string{"team/dev"},
+		Limit:      10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("got %d results, want at least 2", len(results))
+	}
+	if results[0].MemoryID != artifactID {
+		t.Fatalf("first memory_id = %q, want artifact-backed %q", results[0].MemoryID, artifactID)
+	}
+	if results[1].MemoryID != plainID {
+		t.Fatalf("second memory_id = %q, want plain %q", results[1].MemoryID, plainID)
+	}
+}
+
+func TestRecallBoostsGraphConnectedMemory(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+
+	plainID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "graph boost query",
+		Subject:       "plain",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+		AuthoredAtMS:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "graph boost query",
+		Subject:       "graph",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+		AuthoredAtMS:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	supporterID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "supporting memory",
+		Subject:       "supporter",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+		AuthoredAtMS:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.db.ExecContext(fixture.ctx, `
+		INSERT INTO memory_edges(edge_id, from_memory_id, to_memory_id, relation_type, weight, origin_peer_id, authored_at_ms)
+		VALUES('edge-graph-1', ?, ?, 'supports', 1.0, 'peer-a', 1)
+	`, supporterID, graphID); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := fixture.svc.Recall(fixture.ctx, RecallRequest{
+		Query:      "graph boost query",
+		Namespaces: []string{"team/dev"},
+		Limit:      10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("got %d results, want at least 2", len(results))
+	}
+	if results[0].MemoryID != graphID {
+		t.Fatalf("first memory_id = %q, want graph-connected %q", results[0].MemoryID, graphID)
+	}
+	if results[1].MemoryID != plainID {
+		t.Fatalf("second memory_id = %q, want plain %q", results[1].MemoryID, plainID)
+	}
+}
+
 func TestStorePersistsArtifactSpans(t *testing.T) {
 	fixture := newMemoryFixture(t, "peer-a")
 	memoryID, err := fixture.svc.Store(fixture.ctx, StoreRequest{

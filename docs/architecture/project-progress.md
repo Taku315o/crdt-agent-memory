@@ -72,7 +72,7 @@ The following items are still not implemented or are only partially implemented.
 
 - Sync still runs in `http-dev`, not Iroh.
 - The sync extraction path still depends on the `sync_change_log` capture flow.
-- `memory.recall` now uses sqlite-vec when the extension is available and falls back to FTS5 when it is not; trust/signature bucketing and `authored_at_ms` still shape the order, but graph proximity and artifact reranking are not part of recall yet.
+- `memory.recall` now merges sqlite-vec and FTS5 candidate sets when available, then applies trust/signature, graph, artifact, and recency boosts.
 - `memory.explain` is query-aware and trust-aware, but it is still a per-row breakdown helper rather than the future unified hybrid reranker.
 
 ## 5. Verification
