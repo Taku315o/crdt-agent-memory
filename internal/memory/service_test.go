@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"crdt-agent-memory/internal/indexer"
 	"crdt-agent-memory/internal/storage"
 	"crdt-agent-memory/internal/testenv"
 )
@@ -22,8 +23,9 @@ func newMemoryFixture(t *testing.T, peerID string) *memoryFixture {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "memory.sqlite")
 	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
-		Path:         dbPath,
-		CRSQLitePath: testenv.CRSQLitePath(t),
+		Path:          dbPath,
+		CRSQLitePath:  testenv.CRSQLitePath(t),
+		SQLiteVecPath: testenv.SQLiteVecPath(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -43,8 +45,9 @@ func TestStoreRoutesSharedAndPrivateSeparately(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "memory.sqlite")
 	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
-		Path:         dbPath,
-		CRSQLitePath: testenv.CRSQLitePath(t),
+		Path:          dbPath,
+		CRSQLitePath:  testenv.CRSQLitePath(t),
+		SQLiteVecPath: testenv.SQLiteVecPath(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -111,8 +114,9 @@ func TestRecallUnionView(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "recall.sqlite")
 	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
-		Path:         dbPath,
-		CRSQLitePath: testenv.CRSQLitePath(t),
+		Path:          dbPath,
+		CRSQLitePath:  testenv.CRSQLitePath(t),
+		SQLiteVecPath: testenv.SQLiteVecPath(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +130,7 @@ func TestRecallUnionView(t *testing.T) {
 	_, _ = svc.Store(ctx, StoreRequest{
 		Visibility:    VisibilityShared,
 		Namespace:     "team/dev",
-		Body:          "release checklist sync issue",
+		Body:          "release checklist recall body",
 		Subject:       "release",
 		OriginPeerID:  "peer-a",
 		AuthorAgentID: "agent-a",
@@ -134,14 +138,14 @@ func TestRecallUnionView(t *testing.T) {
 	_, _ = svc.Store(ctx, StoreRequest{
 		Visibility:    VisibilityPrivate,
 		Namespace:     "local/dev",
-		Body:          "private sync note",
+		Body:          "release checklist recall body",
 		Subject:       "private",
 		OriginPeerID:  "peer-a",
 		AuthorAgentID: "agent-a",
 	})
 
 	results, err := svc.Recall(ctx, RecallRequest{
-		Query:          "sync",
+		Query:          "release checklist recall body",
 		IncludePrivate: true,
 		Limit:          10,
 	})
@@ -153,12 +157,74 @@ func TestRecallUnionView(t *testing.T) {
 	}
 }
 
+func TestRecallUsesVectorIndexWhenAvailable(t *testing.T) {
+	if testenv.SQLiteVecPath() == "" {
+		t.Skip("sqlite-vec not available")
+	}
+	fixture := newMemoryFixture(t, "peer-a")
+	ctx := fixture.ctx
+
+	sharedID, err := fixture.svc.Store(ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "vector recall candidate",
+		Subject:       "shared",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateID, err := fixture.svc.Store(ctx, StoreRequest{
+		Visibility:    VisibilityPrivate,
+		Namespace:     "local/dev",
+		Body:          "vector recall candidate",
+		Subject:       "private",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worker := indexer.NewWorker(fixture.db, 0)
+	if err := worker.ProcessOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var vectorCount int
+	if err := fixture.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM memory_embedding_vectors
+	`).Scan(&vectorCount); err != nil {
+		t.Fatal(err)
+	}
+	if vectorCount < 2 {
+		t.Fatalf("vector_count = %d, want at least 2", vectorCount)
+	}
+
+	results, err := fixture.svc.Recall(ctx, RecallRequest{
+		Query:          "vector recall candidate",
+		IncludePrivate: true,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("got %d results, want at least 2", len(results))
+	}
+	if results[0].MemoryID != sharedID && results[0].MemoryID != privateID {
+		t.Fatalf("first recall result = %s, want one of indexed ids", results[0].MemoryID)
+	}
+}
+
 func TestRecallRanksValidBeforeMissingAndByTrustWeight(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "ranking.sqlite")
 	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
-		Path:         dbPath,
-		CRSQLitePath: testenv.CRSQLitePath(t),
+		Path:          dbPath,
+		CRSQLitePath:  testenv.CRSQLitePath(t),
+		SQLiteVecPath: testenv.SQLiteVecPath(),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -16,8 +16,9 @@ func setupSyncService(t *testing.T, name string) (*memory.Service, *Service) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), name+".sqlite")
 	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
-		Path:         dbPath,
-		CRSQLitePath: testenv.CRSQLitePath(t),
+		Path:          dbPath,
+		CRSQLitePath:  testenv.CRSQLitePath(t),
+		SQLiteVecPath: testenv.SQLiteVecPath(),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -16,8 +16,9 @@ func TestDiagnoseSummarizesTrustAndOrphans(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "scrubber.sqlite")
 	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
-		Path:         dbPath,
-		CRSQLitePath: testenv.CRSQLitePath(t),
+		Path:          dbPath,
+		CRSQLitePath:  testenv.CRSQLitePath(t),
+		SQLiteVecPath: testenv.SQLiteVecPath(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -106,8 +107,9 @@ func TestRunActiveRepairDeletesOldQuarantineAndSuspendsOrphans(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "repair.sqlite")
 	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
-		Path:         dbPath,
-		CRSQLitePath: testenv.CRSQLitePath(t),
+		Path:          dbPath,
+		CRSQLitePath:  testenv.CRSQLitePath(t),
+		SQLiteVecPath: testenv.SQLiteVecPath(),
 	})
 	if err != nil {
 		t.Fatal(err)

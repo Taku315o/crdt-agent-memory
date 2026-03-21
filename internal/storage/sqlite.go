@@ -71,6 +71,12 @@ func OpenSQLite(ctx context.Context, opts OpenOptions) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("crsqlite extension not loaded correctly: %w", err)
 	}
+	if opts.SQLiteVecPath != "" {
+		if err := db.QueryRowContext(ctx, `SELECT vec_version()`).Scan(new(string)); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("sqlite-vec extension not loaded correctly: %w", err)
+		}
+	}
 	return db, nil
 }
 

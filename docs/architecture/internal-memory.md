@@ -135,7 +135,7 @@ return memoryID
 
 ---
 
-### 4-2. Recall — メモリを全文検索する
+### 4-2. Recall — メモリを検索する
 
 ```
 Recall(ctx, RecallRequest) ([]RecallResult, error)
@@ -144,16 +144,26 @@ Recall(ctx, RecallRequest) ([]RecallResult, error)
 #### 動作フロー
 
 ```
-recall_memory_view（shared + private の UNION ALL ビュー）
-  JOIN memory_fts（FTS5 仮想テーブル）
-  WHERE memory_fts MATCH <query>
+sqlite-vec が使えるとき
+  memory_embedding_vectors（vec0）
+  WHERE embedding MATCH vec_f32(<query embedding>)
   [AND memory_space = 'shared']     ← IncludePrivate=false のとき
+  JOIN recall_memory_view
   [AND namespace IN (...)]          ← Namespaces 指定のとき
-  ORDER BY bm25(memory_fts), authored_at_ms DESC
+  ORDER BY ranking_bucket, trust_weight DESC, distance, authored_at_ms DESC
   LIMIT <limit>
+
+sqlite-vec が使えないとき
+  recall_memory_view（shared + private の UNION ALL ビュー）
+    JOIN memory_fts（FTS5 仮想テーブル）
+    WHERE memory_fts MATCH <query>
+    [AND memory_space = 'shared']   ← IncludePrivate=false のとき
+    [AND namespace IN (...)]        ← Namespaces 指定のとき
+    ORDER BY bm25(memory_fts), authored_at_ms DESC
+    LIMIT <limit>
 ```
 
-- BM25 スコアで関連度順にソートし、等スコアは新しい順。
+- sqlite-vec が使える場合は semantic retrieval を優先し、結果が空なら FTS5 にフォールバックする。
 - `recall_memory_view` は `memory_nodes` と `private_memory_nodes` を `UNION ALL` したビュー。
 - `IncludePrivate=false`（デフォルト）の場合、shared のみが返ります。
 

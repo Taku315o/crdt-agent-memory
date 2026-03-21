@@ -29,8 +29,9 @@ func newSyncFixture(t *testing.T, peerID string, allowPeers []string, allowedNam
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), peerID+".sqlite")
 	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
-		Path:         dbPath,
-		CRSQLitePath: testenv.CRSQLitePath(t),
+		Path:          dbPath,
+		CRSQLitePath:  testenv.CRSQLitePath(t),
+		SQLiteVecPath: testenv.SQLiteVecPath(),
 	})
 	if err != nil {
 		t.Fatal(err)

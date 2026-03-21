@@ -121,6 +121,23 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 		}
 	}
 
+	vecEnabled, err := hasSQLiteVec(ctx, tx)
+	if err != nil {
+		return Metadata{}, err
+	}
+	if vecEnabled {
+		vecDDL := `
+			CREATE VIRTUAL TABLE IF NOT EXISTS memory_embedding_vectors USING vec0(
+				memory_space TEXT PARTITION KEY,
+				memory_id TEXT,
+				embedding FLOAT[8]
+			)
+		`
+		if _, err := tx.ExecContext(ctx, vecDDL); err != nil {
+			return Metadata{}, fmt.Errorf("create vector index: %w", err)
+		}
+	}
+
 	meta := Metadata{
 		SchemaHash:                   hashString(combined.String()),
 		CRRManifestHash:              hashString(strings.Join(sharedCRRTables, ",")),
@@ -146,6 +163,18 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 		return Metadata{}, err
 	}
 	return meta, nil
+}
+
+func hasSQLiteVec(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var version string
+	if err := tx.QueryRowContext(ctx, `SELECT vec_version()`).Scan(&version); err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "no such function") && strings.Contains(msg, "vec_version") {
+			return false, nil
+		}
+		return false, err
+	}
+	return version != "", nil
 }
 
 func LoadMetadata(ctx context.Context, db *sql.DB) (Metadata, error) {

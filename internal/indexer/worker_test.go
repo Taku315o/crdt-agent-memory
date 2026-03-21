@@ -26,8 +26,9 @@ func newIndexFixture(t *testing.T) *indexFixture {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "index.sqlite")
 	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
-		Path:         dbPath,
-		CRSQLitePath: testenv.CRSQLitePath(t),
+		Path:          dbPath,
+		CRSQLitePath:  testenv.CRSQLitePath(t),
+		SQLiteVecPath: testenv.SQLiteVecPath(),
 	})
 	if err != nil {
 		t.Fatal(err)

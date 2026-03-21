@@ -2,18 +2,23 @@ package indexer
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
+
+	"crdt-agent-memory/internal/embedding"
 )
 
 type Worker struct {
 	db       *sql.DB
 	interval time.Duration
+	vecOnce  sync.Once
+	vecOK    bool
+	vecErr   error
 }
 
 func NewWorker(db *sql.DB, interval time.Duration) *Worker {
@@ -128,6 +133,35 @@ func (w *Worker) pendingItems(ctx context.Context, limit int) ([]queueItem, erro
 	return items, nil
 }
 
+func (w *Worker) vectorIndexEnabled(ctx context.Context) (bool, error) {
+	w.vecOnce.Do(func() {
+		var version string
+		if err := w.db.QueryRowContext(ctx, `SELECT vec_version()`).Scan(&version); err != nil {
+			msg := strings.ToLower(err.Error())
+			if strings.Contains(msg, "no such function") && strings.Contains(msg, "vec_version") {
+				w.vecErr = nil
+				w.vecOK = false
+				return
+			}
+			w.vecErr = err
+			return
+		}
+		var exists int
+		w.vecErr = w.db.QueryRowContext(ctx, `
+			SELECT 1 FROM sqlite_master
+			WHERE type = 'table' AND name = 'memory_embedding_vectors'
+			LIMIT 1
+		`).Scan(&exists)
+		if w.vecErr == sql.ErrNoRows {
+			w.vecErr = nil
+			w.vecOK = false
+			return
+		}
+		w.vecOK = w.vecErr == nil
+	})
+	return w.vecOK, w.vecErr
+}
+
 func (w *Worker) processItem(ctx context.Context, item queueItem) error {
 	tx, err := w.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -135,7 +169,12 @@ func (w *Worker) processItem(ctx context.Context, item queueItem) error {
 	}
 	defer tx.Rollback()
 
-	body, found, err := fetchBody(ctx, tx, item.memorySpace, item.memoryID)
+	vecEnabled, err := w.vectorIndexEnabled(ctx)
+	if err != nil {
+		return err
+	}
+
+	record, found, err := fetchBody(ctx, tx, item.memorySpace, item.memoryID)
 	if err != nil {
 		return err
 	}
@@ -145,40 +184,52 @@ func (w *Worker) processItem(ctx context.Context, item queueItem) error {
 		`, item.memorySpace, item.memoryID); err != nil {
 			return err
 		}
+		if vecEnabled {
+			if _, err := tx.ExecContext(ctx, `
+				DELETE FROM memory_embedding_vectors WHERE memory_space = ? AND memory_id = ?
+			`, item.memorySpace, item.memoryID); err != nil {
+				return err
+			}
+		}
 		return finishQueueItem(ctx, tx, item.queueID)
 	}
-	if err := upsertEmbedding(ctx, tx, item.memorySpace, item.memoryID, body); err != nil {
+	if err := upsertEmbedding(ctx, tx, vecEnabled, item.memorySpace, item.memoryID, record.namespace, record.body); err != nil {
 		return err
 	}
 	return finishQueueItem(ctx, tx, item.queueID)
 }
 
-func fetchBody(ctx context.Context, tx *sql.Tx, memorySpace, memoryID string) (string, bool, error) {
-	var body string
+type indexedMemory struct {
+	namespace string
+	body      string
+}
+
+func fetchBody(ctx context.Context, tx *sql.Tx, memorySpace, memoryID string) (indexedMemory, bool, error) {
+	var record indexedMemory
 	switch memorySpace {
 	case "shared":
-		if err := tx.QueryRowContext(ctx, `SELECT body FROM memory_nodes WHERE memory_id = ?`, memoryID).Scan(&body); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT namespace, body FROM memory_nodes WHERE memory_id = ?`, memoryID).Scan(&record.namespace, &record.body); err != nil {
 			if err == sql.ErrNoRows {
-				return "", false, nil
+				return indexedMemory{}, false, nil
 			}
-			return "", false, err
+			return indexedMemory{}, false, err
 		}
-		return body, true, nil
+		return record, true, nil
 	case "private":
-		if err := tx.QueryRowContext(ctx, `SELECT body FROM private_memory_nodes WHERE memory_id = ?`, memoryID).Scan(&body); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT local_namespace, body FROM private_memory_nodes WHERE memory_id = ?`, memoryID).Scan(&record.namespace, &record.body); err != nil {
 			if err == sql.ErrNoRows {
-				return "", false, nil
+				return indexedMemory{}, false, nil
 			}
-			return "", false, err
+			return indexedMemory{}, false, err
 		}
-		return body, true, nil
+		return record, true, nil
 	default:
-		return "", false, nil
+		return indexedMemory{}, false, nil
 	}
 }
 
-func upsertEmbedding(ctx context.Context, tx *sql.Tx, memorySpace, memoryID, body string) error {
-	vector := embed(body)
+func upsertEmbedding(ctx context.Context, tx *sql.Tx, vecEnabled bool, memorySpace, memoryID, namespace, body string) error {
+	vector := embedding.FromText(body)
 	raw, err := json.Marshal(vector)
 	if err != nil {
 		return err
@@ -191,6 +242,21 @@ func upsertEmbedding(ctx context.Context, tx *sql.Tx, memorySpace, memoryID, bod
 			embedding_dim = excluded.embedding_dim,
 			indexed_at_ms = excluded.indexed_at_ms
 	`, memorySpace, memoryID, string(raw), len(vector), time.Now().UnixMilli())
+	if err != nil {
+		return err
+	}
+	if !vecEnabled {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM memory_embedding_vectors WHERE memory_space = ? AND memory_id = ?
+	`, memorySpace, memoryID); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO memory_embedding_vectors(memory_space, memory_id, embedding)
+		VALUES(?, ?, vec_f32(?))
+	`, memorySpace, memoryID, string(raw))
 	return err
 }
 
@@ -204,11 +270,5 @@ func finishQueueItem(ctx context.Context, tx *sql.Tx, queueID string) error {
 }
 
 func embed(body string) []float64 {
-	sum := sha256.Sum256([]byte(body))
-	out := make([]float64, 8)
-	for i := 0; i < len(out); i++ {
-		segment := binary.BigEndian.Uint32(sum[i*4 : i*4+4])
-		out[i] = float64(segment%1000) / 1000.0
-	}
-	return out
+	return embedding.FromText(body)
 }

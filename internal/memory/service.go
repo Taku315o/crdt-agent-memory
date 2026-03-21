@@ -5,17 +5,23 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"encoding/json"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
+	"crdt-agent-memory/internal/embedding"
 	"crdt-agent-memory/internal/signing"
 )
 
 type Service struct {
 	db     *sql.DB
 	signer signing.Signer
+	vecOnce sync.Once
+	vecOK   bool
+	vecErr  error
 }
 
 func NewService(db *sql.DB, signer signing.Signer) *Service {
@@ -48,6 +54,125 @@ func (s *Service) Recall(ctx context.Context, req RecallRequest) ([]RecallResult
 	if limit <= 0 {
 		limit = 10
 	}
+	if ok, err := s.vectorIndexEnabled(ctx); err != nil {
+		return nil, err
+	} else if ok {
+		results, err := s.recallWithVector(ctx, req, limit)
+		if err != nil {
+			return nil, err
+		}
+		if len(results) >= limit {
+			return results[:limit], nil
+		}
+		fallback, err := s.recallWithFTS(ctx, req, limit)
+		if err != nil {
+			return nil, err
+		}
+		if len(results) == 0 {
+			return fallback, nil
+		}
+		seen := make(map[string]struct{}, len(results))
+		out := make([]RecallResult, 0, limit)
+		for _, item := range results {
+			key := item.MemorySpace + ":" + item.MemoryID
+			seen[key] = struct{}{}
+			out = append(out, item)
+		}
+		for _, item := range fallback {
+			if len(out) >= limit {
+				break
+			}
+			key := item.MemorySpace + ":" + item.MemoryID
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, item)
+		}
+		return out, nil
+	}
+	return s.recallWithFTS(ctx, req, limit)
+}
+
+func (s *Service) recallWithVector(ctx context.Context, req RecallRequest, limit int) ([]RecallResult, error) {
+	candidateLimit := limit * 10
+	if candidateLimit < 50 {
+		candidateLimit = 50
+	}
+	if candidateLimit < limit {
+		candidateLimit = limit
+	}
+	vectorJSON, err := json.Marshal(embedding.FromText(req.Query))
+	if err != nil {
+		return nil, err
+	}
+	query := `
+		WITH candidate AS (
+			SELECT
+				memory_space,
+				memory_id,
+				distance
+			FROM memory_embedding_vectors
+			WHERE embedding MATCH vec_f32(?)
+			  AND k = ?
+	`
+	args := []any{string(vectorJSON), candidateLimit}
+	if !req.IncludePrivate {
+		query += ` AND memory_space = 'shared'`
+	}
+	query += `
+			ORDER BY distance
+		)
+		SELECT
+			v.memory_space,
+			v.memory_id,
+			v.namespace,
+			v.memory_type,
+			v.subject,
+			v.body,
+			v.lifecycle_state,
+			v.authored_at_ms,
+			v.source_uri,
+			v.source_hash,
+			v.origin_peer_id
+		FROM candidate c
+		JOIN recall_memory_view v
+		  ON v.memory_space = c.memory_space
+		 AND v.memory_id = c.memory_id
+		LEFT JOIN memory_verification_state vs
+		  ON vs.memory_space = v.memory_space
+		 AND vs.memory_id = v.memory_id
+		LEFT JOIN memory_nodes mn
+		  ON v.memory_space = 'shared'
+		 AND mn.memory_id = v.memory_id
+		LEFT JOIN peer_policies pp
+		  ON v.memory_space = 'shared'
+		 AND pp.peer_id = v.origin_peer_id
+		WHERE COALESCE(vs.signature_status, '') != ?
+	`
+	args = append(args, SignatureStatusInvalidSignature)
+	if len(req.Namespaces) > 0 {
+		placeholders := make([]string, 0, len(req.Namespaces))
+		for _, ns := range req.Namespaces {
+			placeholders = append(placeholders, "?")
+			args = append(args, ns)
+		}
+		query += fmt.Sprintf(" AND v.namespace IN (%s)", strings.Join(placeholders, ","))
+	}
+	query += `
+		ORDER BY
+			` + rankingBucketCase("v.memory_space", "vs.signature_status", "mn.author_signature") + `,
+			COALESCE(pp.trust_weight, 1.0) DESC,
+			c.distance,
+			v.authored_at_ms DESC
+		LIMIT ?
+	`
+	args = append(args, limit)
+
+	return s.scanRecallRows(ctx, query, args...)
+}
+
+func (s *Service) recallWithFTS(ctx context.Context, req RecallRequest, limit int) ([]RecallResult, error) {
 	query := `
 		SELECT
 			v.memory_space,
@@ -100,6 +225,10 @@ func (s *Service) Recall(ctx context.Context, req RecallRequest) ([]RecallResult
 	`
 	args = append(args, limit)
 
+	return s.scanRecallRows(ctx, query, args...)
+}
+
+func (s *Service) scanRecallRows(ctx context.Context, query string, args ...any) ([]RecallResult, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -127,6 +256,35 @@ func (s *Service) Recall(ctx context.Context, req RecallRequest) ([]RecallResult
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func (s *Service) vectorIndexEnabled(ctx context.Context) (bool, error) {
+	s.vecOnce.Do(func() {
+		var version string
+		if err := s.db.QueryRowContext(ctx, `SELECT vec_version()`).Scan(&version); err != nil {
+			msg := strings.ToLower(err.Error())
+			if strings.Contains(msg, "no such function") && strings.Contains(msg, "vec_version") {
+				s.vecErr = nil
+				s.vecOK = false
+				return
+			}
+			s.vecErr = err
+			return
+		}
+		var exists int
+		s.vecErr = s.db.QueryRowContext(ctx, `
+			SELECT 1 FROM sqlite_master
+			WHERE type = 'table' AND name = 'memory_embedding_vectors'
+			LIMIT 1
+		`).Scan(&exists)
+		if s.vecErr == sql.ErrNoRows {
+			s.vecErr = nil
+			s.vecOK = false
+			return
+		}
+		s.vecOK = s.vecErr == nil
+	})
+	return s.vecOK, s.vecErr
 }
 
 func (s *Service) Supersede(ctx context.Context, oldMemoryID string, req StoreRequest) (string, error) {
