@@ -388,4 +388,4 @@ bridge は必ず `memoryd` の HTTP API を叩き、`/v1/memory/store` / `/v1/me
 - transport は Iroh ではなく `http-dev`
 - MCP surface は `memory.store` / `memory.recall` / `memory.supersede` / `memory.signal` / `memory.explain` / `memory.sync_status`
 - `memory.trace_decision` は未実装
-- embedding state は deterministic local embedding であり、production semantic model ではない
+- embedding state のデフォルトは deterministic local embedding だが、`EMBEDDING_PROVIDER=openai` と `OPENAI_API_KEY` を設定すると OpenAI embeddings backend を使える

@@ -65,14 +65,14 @@ The following items are still not implemented or are only partially implemented.
 - Removing the remaining `sync_change_log` dependency in the sync path.
 - Hardening the sync/index path so CRR schema changes are less brittle.
 - `memory.trace_decision` MCP tool.
-- Production semantic embedding instead of deterministic local embeddings.
+- Default production semantic embedding rollout across all environments and model management.
 - Richer graph-based explainability beyond query-aware trust/bm25 breakdown.
 
 ## 4. Important Gaps To Keep In Mind
 
 - Sync still runs in `http-dev`, not Iroh.
 - The sync extraction path still depends on the `sync_change_log` capture flow.
-- `memory.recall` is still FTS-backed; the index worker maintains derived embedding state and queue health, but it is not the canonical recall engine.
+- `memory.recall` now uses sqlite-vec when the extension is available and falls back to FTS5 when it is not; the index worker maintains derived embedding state and queue health, but it is still not a production semantic model.
 - `memory.explain` is query-aware and trust-aware, but it is still tied to the current FTS ranking path rather than a future semantic/vector ranker.
 
 ## 5. Verification

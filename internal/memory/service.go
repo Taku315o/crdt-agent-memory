@@ -50,6 +50,10 @@ func (s *Service) Store(ctx context.Context, req StoreRequest) (string, error) {
 }
 
 func (s *Service) Recall(ctx context.Context, req RecallRequest) ([]RecallResult, error) {
+	req.Query = strings.TrimSpace(req.Query)
+	if req.Query == "" {
+		return nil, errors.New("query is required")
+	}
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 10
@@ -102,7 +106,11 @@ func (s *Service) recallWithVector(ctx context.Context, req RecallRequest, limit
 	if candidateLimit < limit {
 		candidateLimit = limit
 	}
-	vectorJSON, err := json.Marshal(embedding.FromText(req.Query))
+	vector, err := embedding.FromText(ctx, req.Query)
+	if err != nil {
+		return nil, err
+	}
+	vectorJSON, err := json.Marshal(vector)
 	if err != nil {
 		return nil, err
 	}

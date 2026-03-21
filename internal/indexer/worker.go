@@ -229,7 +229,10 @@ func fetchBody(ctx context.Context, tx *sql.Tx, memorySpace, memoryID string) (i
 }
 
 func upsertEmbedding(ctx context.Context, tx *sql.Tx, vecEnabled bool, memorySpace, memoryID, namespace, body string) error {
-	vector := embedding.FromText(body)
+	vector, err := embedding.FromText(ctx, body)
+	if err != nil {
+		return err
+	}
 	raw, err := json.Marshal(vector)
 	if err != nil {
 		return err
@@ -270,5 +273,5 @@ func finishQueueItem(ctx context.Context, tx *sql.Tx, queueID string) error {
 }
 
 func embed(body string) []float64 {
-	return embedding.FromText(body)
+	return embedding.LocalFromText(body)
 }
