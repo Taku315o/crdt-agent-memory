@@ -157,6 +157,12 @@ Explicit downgrade rule:
 - idempotency scope is local peer only
 - absence of `idempotency_key` means append semantics; duplicate semantic content may create a new row
 
+### Relations
+
+- `relations[]` is optional and is written as outgoing edges from the stored memory
+- accepted `relation_type` values are `supports`, `contradicts`, `derived_from`, `about`, `caused_by`, and `references`
+- `supersedes` is reserved for `memory.supersede` and is not accepted by `memory.store`
+
 ## 5. Tool: `memory.recall`
 
 ### Purpose

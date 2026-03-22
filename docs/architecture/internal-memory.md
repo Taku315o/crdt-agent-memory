@@ -159,12 +159,13 @@ lexical candidate search
 candidate merge
   JOIN recall_memory_view
   JOIN memory_verification_state / peer_policies
-  JOIN memory_edges / artifact_spans aggregate
+  JOIN memory_edges / private_memory_edges / artifact_spans aggregate
   ORDER BY bucket, trust, semantic+lexical source score, graph boost, artifact boost, authored_at_ms DESC
   LIMIT <limit>
 ```
 
 - 現行実装は semantic candidates と lexical candidates を併用し、trust/signature bucket, graph connectivity, artifact spans, recency を加えて再ランキングする。
+- `Store` の `relations[]` は shared では `memory_edges`、private では `private_memory_edges` に保存される。
 - `recall_memory_view` は `memory_nodes` と `private_memory_nodes` を `UNION ALL` したビュー。
 - `IncludePrivate=false`（デフォルト）の場合、shared のみが返ります。
 - `ranking_bucket` / `trust_weight` / `authored_at_ms` は順位付けに使われる。
@@ -195,6 +196,7 @@ return newMemoryID
 
 - 旧メモリは **削除されない**。`lifecycle_state` が `superseded` に変更される。
 - `memory_edges` に `supersedes` エッジが張られ、グラフから更新履歴を追跡できる。
+- `Store` の `relations[]` では `supersedes` を使わず、専用の `Supersede` を使う。
 - `Supersede` は常に `VisibilityShared` を強制する（private の上書きには非対応）。
 
 ---
