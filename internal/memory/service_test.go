@@ -500,6 +500,132 @@ func TestStorePersistsArtifactSpans(t *testing.T) {
 	}
 }
 
+func TestStorePersistsRelationsByVisibility(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+
+	sharedTargetID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "shared target",
+		Subject:       "target",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedSourceID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "shared source",
+		Subject:       "source",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+		Relations: []MemoryRelationInput{
+			{RelationType: "derived_from", ToMemoryID: sharedTargetID, Weight: 0.75},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sharedEdgeCount int
+	var relationType string
+	var weight float64
+	if err := fixture.db.QueryRowContext(fixture.ctx, `
+		SELECT COUNT(*)
+		FROM memory_edges
+		WHERE from_memory_id = ? AND to_memory_id = ? AND relation_type = 'derived_from'
+	`, sharedSourceID, sharedTargetID).Scan(&sharedEdgeCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.QueryRowContext(fixture.ctx, `
+		SELECT relation_type, weight
+		FROM memory_edges
+		WHERE from_memory_id = ? AND to_memory_id = ?
+	`, sharedSourceID, sharedTargetID).Scan(&relationType, &weight); err != nil {
+		t.Fatal(err)
+	}
+	if sharedEdgeCount != 1 {
+		t.Fatalf("shared edge count = %d, want 1", sharedEdgeCount)
+	}
+	if relationType != "derived_from" {
+		t.Fatalf("relation_type = %q, want derived_from", relationType)
+	}
+	if weight != 0.75 {
+		t.Fatalf("weight = %v, want 0.75", weight)
+	}
+
+	privateTargetID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityPrivate,
+		Namespace:     "local/dev",
+		Body:          "private target",
+		Subject:       "target",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateSourceID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityPrivate,
+		Namespace:     "local/dev",
+		Body:          "private source",
+		Subject:       "source",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+		Relations: []MemoryRelationInput{
+			{RelationType: "references", ToMemoryID: privateTargetID},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var privateEdgeCount int
+	if err := fixture.db.QueryRowContext(fixture.ctx, `
+		SELECT COUNT(*)
+		FROM private_memory_edges
+		WHERE from_memory_id = ? AND to_memory_id = ? AND relation_type = 'references'
+	`, privateSourceID, privateTargetID).Scan(&privateEdgeCount); err != nil {
+		t.Fatal(err)
+	}
+	if privateEdgeCount != 1 {
+		t.Fatalf("private edge count = %d, want 1", privateEdgeCount)
+	}
+}
+
+func TestStoreRejectsUnsupportedRelationType(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+
+	targetID, err := fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "target",
+		Subject:       "target",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = fixture.svc.Store(fixture.ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "source",
+		Subject:       "source",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+		Relations: []MemoryRelationInput{
+			{RelationType: "supersedes", ToMemoryID: targetID},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected unsupported relation type error")
+	}
+}
+
 func TestTraceDecisionIncludesArtifactsAndSkipsSuspendedEdges(t *testing.T) {
 	fixture := newMemoryFixture(t, "peer-a")
 	decisionID, err := fixture.svc.Store(fixture.ctx, StoreRequest{

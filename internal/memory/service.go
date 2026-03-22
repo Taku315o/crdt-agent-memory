@@ -1041,6 +1041,11 @@ func normalizeStoreRequest(req StoreRequest) (StoreRequest, error) {
 			return StoreRequest{}, err
 		}
 	}
+	for i := range req.Relations {
+		if err := normalizeMemoryRelationInput(&req.Relations[i]); err != nil {
+			return StoreRequest{}, err
+		}
+	}
 	return req, nil
 }
 
@@ -1064,6 +1069,36 @@ func normalizeArtifactSpanInput(span *ArtifactSpanInput) error {
 		return errors.New("artifact_spans end_line must be greater than or equal to start_line")
 	}
 	return nil
+}
+
+func normalizeMemoryRelationInput(rel *MemoryRelationInput) error {
+	rel.RelationType = strings.TrimSpace(rel.RelationType)
+	rel.ToMemoryID = strings.TrimSpace(rel.ToMemoryID)
+	if rel.RelationType == "" {
+		return errors.New("relations[].relation_type is required")
+	}
+	if !isAllowedStoreRelationType(rel.RelationType) {
+		return errors.New("relations[].relation_type must be supports, contradicts, derived_from, about, caused_by, or references")
+	}
+	if rel.ToMemoryID == "" {
+		return errors.New("relations[].to_memory_id is required")
+	}
+	if rel.Weight < 0 {
+		return errors.New("relations[].weight must be greater than or equal to 0")
+	}
+	if rel.Weight == 0 {
+		rel.Weight = 1.0
+	}
+	return nil
+}
+
+func isAllowedStoreRelationType(relationType string) bool {
+	switch strings.TrimSpace(relationType) {
+	case "supports", "contradicts", "derived_from", "about", "caused_by", "references":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeSignalRequest(req SignalRequest) (SignalRequest, error) {
@@ -1138,6 +1173,9 @@ func (s *Service) storeTx(ctx context.Context, tx *sql.Tx, req StoreRequest, sig
 		return err
 	}
 	if err := insertArtifactSpans(ctx, tx, req); err != nil {
+		return err
+	}
+	if err := insertRelations(ctx, tx, req); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -1219,6 +1257,45 @@ func insertArtifactSpans(ctx context.Context, tx *sql.Tx, req StoreRequest) erro
 					span_id, artifact_id, memory_id, start_offset, end_offset, start_line, end_line, quote_hash, authored_at_ms
 				) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`, uuid.NewString(), artifactID, req.MemoryID, span.StartOffset, span.EndOffset, span.StartLine, span.EndLine, span.QuoteHash, req.AuthoredAtMS); err != nil {
+				return err
+			}
+		default:
+			return errors.New("visibility must be shared or private")
+		}
+	}
+	return nil
+}
+
+func insertRelations(ctx context.Context, tx *sql.Tx, req StoreRequest) error {
+	if len(req.Relations) == 0 {
+		return nil
+	}
+
+	for _, rel := range req.Relations {
+		if rel.ToMemoryID == req.MemoryID {
+			return errors.New("relations[].to_memory_id cannot reference the stored memory itself")
+		}
+		exists, err := memoryExistsTx(ctx, tx, string(req.Visibility), rel.ToMemoryID)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("relations[].to_memory_id %q not found: %w", rel.ToMemoryID, ErrMemoryNotFound)
+		}
+
+		switch req.Visibility {
+		case VisibilityShared:
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO memory_edges(edge_id, from_memory_id, to_memory_id, relation_type, weight, origin_peer_id, authored_at_ms)
+				VALUES(?, ?, ?, ?, ?, ?, ?)
+			`, uuid.NewString(), req.MemoryID, rel.ToMemoryID, rel.RelationType, rel.Weight, req.OriginPeerID, req.AuthoredAtMS); err != nil {
+				return err
+			}
+		case VisibilityPrivate:
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO private_memory_edges(edge_id, from_memory_id, to_memory_id, relation_type, weight, authored_at_ms)
+				VALUES(?, ?, ?, ?, ?, ?)
+			`, uuid.NewString(), req.MemoryID, rel.ToMemoryID, rel.RelationType, rel.Weight, req.AuthoredAtMS); err != nil {
 				return err
 			}
 		default:

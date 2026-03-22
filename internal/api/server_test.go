@@ -168,6 +168,58 @@ func TestMemoryStoreContract(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreAcceptsRelations(t *testing.T) {
+	fixture := newAPIFixture(t)
+	client := fixture.server.Client()
+
+	targetResp, targetRaw := doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/memory/store", StoreRequest{
+		Visibility:    memory.VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "relation target",
+		Subject:       "target",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+	if targetResp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", targetResp.StatusCode)
+	}
+	var targetEnvelope testEnvelope[StoreResponse]
+	if err := json.Unmarshal(targetRaw, &targetEnvelope); err != nil {
+		t.Fatal(err)
+	}
+
+	sourceResp, sourceRaw := doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/memory/store", StoreRequest{
+		Visibility:    memory.VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "relation source",
+		Subject:       "source",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+		Relations: []memory.MemoryRelationInput{
+			{RelationType: "references", ToMemoryID: targetEnvelope.Data.MemoryRef.MemoryID, Weight: 0.5},
+		},
+	})
+	if sourceResp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", sourceResp.StatusCode)
+	}
+	var sourceEnvelope testEnvelope[StoreResponse]
+	if err := json.Unmarshal(sourceRaw, &sourceEnvelope); err != nil {
+		t.Fatal(err)
+	}
+
+	var edgeCount int
+	if err := fixture.db.QueryRowContext(context.Background(), `
+		SELECT COUNT(*)
+		FROM memory_edges
+		WHERE from_memory_id = ? AND to_memory_id = ? AND relation_type = 'references'
+	`, sourceEnvelope.Data.MemoryRef.MemoryID, targetEnvelope.Data.MemoryRef.MemoryID).Scan(&edgeCount); err != nil {
+		t.Fatal(err)
+	}
+	if edgeCount != 1 {
+		t.Fatalf("edge count = %d, want 1", edgeCount)
+	}
+}
+
 func TestMemoryRecallContract(t *testing.T) {
 	fixture := newAPIFixture(t)
 	client := fixture.server.Client()

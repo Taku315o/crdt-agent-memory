@@ -48,6 +48,7 @@ type StoreRequest struct {
 	OriginPeerID  string              `json:"origin_peer_id,omitempty"`
 	AuthoredAtMS  int64               `json:"authored_at_ms,omitempty"`
 	ArtifactSpans []ArtifactSpanInput `json:"artifact_spans,omitempty"`
+	Relations     []MemoryRelationInput `json:"relations,omitempty"`
 }
 
 type RecallRequest struct {
@@ -99,6 +100,12 @@ type ArtifactSpanInput struct {
 	StartLine   int    `json:"start_line,omitempty"`
 	EndLine     int    `json:"end_line,omitempty"`
 	QuoteHash   string `json:"quote_hash,omitempty"`
+}
+
+type MemoryRelationInput struct {
+	RelationType string  `json:"relation_type"`
+	ToMemoryID   string  `json:"to_memory_id"`
+	Weight       float64 `json:"weight,omitempty"`
 }
 
 type TraceDecisionRequest struct {

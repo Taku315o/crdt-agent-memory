@@ -23,6 +23,13 @@ type storeHTTPRequest struct {
 	AuthorAgentID string `json:"author_agent_id"`
 	OriginPeerID  string `json:"origin_peer_id"`
 	AuthoredAtMS  int64  `json:"authored_at_ms"`
+	Relations     []relationHTTPRequest `json:"relations"`
+}
+
+type relationHTTPRequest struct {
+	RelationType string  `json:"relation_type"`
+	ToMemoryID   string  `json:"to_memory_id"`
+	Weight       float64 `json:"weight"`
 }
 
 type recallHTTPRequest struct {
@@ -112,6 +119,9 @@ func TestMemoryStoreToolCallsHTTP(t *testing.T) {
 				"namespace":  "team/dev",
 				"body":       "store via mcp",
 				"subject":    "smoke",
+				"relations": []map[string]any{
+					{"relation_type": "derived_from", "to_memory_id": "01HRELATE", "weight": 0.5},
+				},
 			},
 		}),
 	})
@@ -126,6 +136,9 @@ func TestMemoryStoreToolCallsHTTP(t *testing.T) {
 	}
 	if gotBody.Visibility != "shared" || gotBody.Namespace != "team/dev" || gotBody.Body != "store via mcp" {
 		t.Fatalf("body = %#v", gotBody)
+	}
+	if len(gotBody.Relations) != 1 || gotBody.Relations[0].RelationType != "derived_from" || gotBody.Relations[0].ToMemoryID != "01HRELATE" {
+		t.Fatalf("relations = %#v, want derived_from relation", gotBody.Relations)
 	}
 	result := resp.Result.(map[string]any)
 	sc := result["structuredContent"].(map[string]any)

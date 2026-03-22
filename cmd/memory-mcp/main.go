@@ -67,6 +67,7 @@ type storeToolRequest struct {
 	OriginPeerID  string                    `json:"origin_peer_id,omitempty"`
 	AuthoredAtMS  int64                     `json:"authored_at_ms,omitempty"`
 	ArtifactSpans []artifactSpanToolRequest `json:"artifact_spans,omitempty"`
+	Relations     []relationToolRequest     `json:"relations,omitempty"`
 }
 
 type recallToolRequest struct {
@@ -120,6 +121,12 @@ type artifactSpanToolRequest struct {
 	StartLine   int    `json:"start_line,omitempty"`
 	EndLine     int    `json:"end_line,omitempty"`
 	QuoteHash   string `json:"quote_hash,omitempty"`
+}
+
+type relationToolRequest struct {
+	RelationType string  `json:"relation_type"`
+	ToMemoryID   string  `json:"to_memory_id"`
+	Weight       float64 `json:"weight,omitempty"`
 }
 
 var apiClient = &http.Client{Timeout: 10 * time.Second}
@@ -230,6 +237,18 @@ func toolDefinitions() []map[string]any {
 								"end_line":     map[string]any{"type": "integer"},
 								"quote_hash":   map[string]any{"type": "string"},
 							},
+						},
+					},
+					"relations": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"relation_type": map[string]any{"type": "string"},
+								"to_memory_id":  map[string]any{"type": "string"},
+								"weight":        map[string]any{"type": "number"},
+							},
+							"required": []string{"relation_type", "to_memory_id"},
 						},
 					},
 				},

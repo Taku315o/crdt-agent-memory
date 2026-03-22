@@ -43,6 +43,7 @@ type StoreRequest struct {
 	OriginPeerID  string                     `json:"origin_peer_id,omitempty"`
 	AuthoredAtMS  int64                      `json:"authored_at_ms,omitempty"`
 	ArtifactSpans []memory.ArtifactSpanInput `json:"artifact_spans,omitempty"`
+	Relations     []memory.MemoryRelationInput `json:"relations,omitempty"`
 }
 
 type StoreResponse struct {
@@ -215,6 +216,7 @@ func (r StoreRequest) ToMemoryRequest() memory.StoreRequest {
 		OriginPeerID:  r.OriginPeerID,
 		AuthoredAtMS:  r.AuthoredAtMS,
 		ArtifactSpans: r.ArtifactSpans,
+		Relations:     r.Relations,
 	}
 }
 
