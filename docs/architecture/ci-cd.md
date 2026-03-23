@@ -5,7 +5,8 @@
 - Pull requests are the only path to `dev` and `main`.
 - `dev` is the integration branch.
 - `main` is the release branch.
-- Preview artifacts are built on pull requests and uploaded as short-lived workflow artifacts.
+- CI runs after merge on pushes to `dev` and `main`.
+- Preview artifacts are built from merged commits and uploaded as short-lived workflow artifacts.
 - Staging releases are created from tags like `v1.2.3-rc.1`.
 - Production releases are created from tags like `v1.2.3`.
 
@@ -38,7 +39,7 @@ This split matches the project shape:
 
 ### Preview
 
-- Trigger: pull request
+- Trigger: push to `dev` or `main`
 - Artifact: short-lived zipped release bundles
 - Goal: reviewer download and smoke-check without polluting releases
 
@@ -85,7 +86,7 @@ The workflows only require the built-in `GITHUB_TOKEN`.
 
 ## 7. Test Strategy
 
-- PR / `dev` / `main`
+- merged push to `dev` / `main`
   - `gofmt -l`
   - `go vet -tags sqlite_fts5 ./...`
   - `go test -tags sqlite_fts5 ./...`
@@ -97,7 +98,6 @@ The workflows only require the built-in `GITHUB_TOKEN`.
 - `govulncheck`
 - `gosec`
 - `gitleaks`
-- `dependency-review-action` on pull requests
 - `CodeQL` on `main` and weekly
 - release artifact provenance attestation
 - CycloneDX SBOM generation on release

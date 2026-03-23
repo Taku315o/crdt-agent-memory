@@ -3,9 +3,9 @@ package memory
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"encoding/json"
 	"sort"
 	"strings"
 	"sync"
@@ -18,8 +18,8 @@ import (
 )
 
 type Service struct {
-	db     *sql.DB
-	signer signing.Signer
+	db      *sql.DB
+	signer  signing.Signer
 	vecOnce sync.Once
 	vecOK   bool
 	vecErr  error
@@ -243,28 +243,28 @@ type recallKey struct {
 }
 
 type recallCandidate struct {
-	key             recallKey
-	semanticRank    int
-	lexicalRank     int
+	key              recallKey
+	semanticRank     int
+	lexicalRank      int
 	semanticDistance float64
-	lexicalBM25     float64
+	lexicalBM25      float64
 }
 
 type recallCandidateRow struct {
 	key recallKey
 	RecallResult
-	SignatureStatus string
-	HasSignature    bool
-	TrustWeight     float64
-	SemanticRank    int
-	LexicalRank     int
+	SignatureStatus  string
+	HasSignature     bool
+	TrustWeight      float64
+	SemanticRank     int
+	LexicalRank      int
 	SemanticDistance float64
-	LexicalBM25     float64
+	LexicalBM25      float64
 }
 
 type recallGraphStat struct {
-	EdgeCount       int
-	SupportWeight   float64
+	EdgeCount        int
+	SupportWeight    float64
 	ContradictWeight float64
 }
 
@@ -274,9 +274,9 @@ type recallArtifactStat struct {
 }
 
 type scoredRecallRow struct {
-	row        recallCandidateRow
-	score      float64
-	bucket     int
+	row         recallCandidateRow
+	score       float64
+	bucket      int
 	trustWeight float64
 }
 
