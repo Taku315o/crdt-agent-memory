@@ -193,10 +193,6 @@ namespaces:
   - "team/research"
   - "project/llm-optimization"
 
-extensions:
-  crsqlite_path: "/path/to/crsqlite.dylib"
-  sqlite_vec_path: "/path/to/vec0.dylib"
-
 transport:
   discovery_profile: "dev-default"
   relay_profile: "dev-default"
