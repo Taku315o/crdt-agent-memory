@@ -6,6 +6,7 @@ ASSET_DIR="$ROOT_DIR/internal/extensions/assets"
 CRSQLITE_VERSION="${CRSQLITE_VERSION:-v0.16.3}"
 SQLITE_VEC_VERSION="${SQLITE_VEC_VERSION:-v0.1.6}"
 SQLITE_VEC_VERSION_NUMBER="${SQLITE_VEC_VERSION#v}"
+REQUESTED_PLATFORMS=("$@")
 
 download() {
   local url="$1"
@@ -19,6 +20,20 @@ vendor_platform() {
   local sqlite_vec_url="$3"
   local crsqlite_name="$4"
   local sqlite_vec_name="$5"
+
+  if [ "${#REQUESTED_PLATFORMS[@]}" -gt 0 ]; then
+    local wanted=false
+    local platform
+    for platform in "${REQUESTED_PLATFORMS[@]}"; do
+      if [ "$platform" = "$platform_dir" ]; then
+        wanted=true
+        break
+      fi
+    done
+    if [ "$wanted" != true ]; then
+      return
+    fi
+  fi
 
   local tmp
   tmp="$(mktemp -d)"

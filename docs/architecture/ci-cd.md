@@ -90,6 +90,7 @@ The workflows only require the built-in `GITHUB_TOKEN`.
   - `gofmt -l`
   - `go vet -tags sqlite_fts5 ./...`
   - `go test -tags sqlite_fts5 ./...`
+  - before test/build, the workflow downloads the required bundled native extensions for the current target platform
 - release
   - build all target binaries again from tagged commit
 
