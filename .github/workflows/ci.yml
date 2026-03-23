@@ -1,0 +1,166 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dev
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      docs: ${{ steps.filter.outputs.docs }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            go:
+              - 'cmd/**'
+              - 'internal/**'
+              - 'migrations/**'
+              - 'configs/**'
+              - 'scripts/**'
+              - 'go.mod'
+              - 'go.sum'
+              - 'Makefile'
+            docs:
+              - 'README.md'
+              - 'docs/**'
+            workflows:
+              - '.github/workflows/**'
+
+  actionlint:
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rhysd/actionlint@v1
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.workflows == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-latest
+          - macos-14
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet -tags sqlite_fts5 ./...
+      - name: Test
+        run: go test -tags sqlite_fts5 ./...
+
+  security:
+    needs: changes
+    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Dependency review
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@v4
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Run govulncheck
+        run: govulncheck ./...
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+      - name: Run gosec
+        run: gosec ./...
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+
+  build-preview:
+    needs:
+      - changes
+      - test
+    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.workflows == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target_os: linux
+            target_arch: amd64
+            artifact_name: linux-amd64
+            apt_packages: ''
+            cc: ''
+          - runner: ubuntu-latest
+            target_os: linux
+            target_arch: arm64
+            artifact_name: linux-arm64
+            apt_packages: 'gcc-aarch64-linux-gnu libc6-dev-arm64-cross'
+            cc: aarch64-linux-gnu-gcc
+          - runner: ubuntu-latest
+            target_os: windows
+            target_arch: amd64
+            artifact_name: windows-amd64
+            apt_packages: 'mingw-w64'
+            cc: x86_64-w64-mingw32-gcc
+          - runner: macos-13
+            target_os: darwin
+            target_arch: amd64
+            artifact_name: darwin-amd64
+            apt_packages: ''
+            cc: ''
+          - runner: macos-14
+            target_os: darwin
+            target_arch: arm64
+            artifact_name: darwin-arm64
+            apt_packages: ''
+            cc: ''
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install cross compiler
+        if: runner.os == 'Linux' && matrix.apt_packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ${{ matrix.apt_packages }}
+      - name: Build preview bundle
+        env:
+          CC: ${{ matrix.cc }}
+        run: |
+          chmod +x scripts/build-release-target.sh
+          scripts/build-release-target.sh "ci-${GITHUB_SHA::12}" "${{ matrix.target_os }}" "${{ matrix.target_arch }}" dist
+      - name: Upload preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-${{ matrix.artifact_name }}
+          path: dist/*
+          retention-days: 7
+
