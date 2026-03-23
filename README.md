@@ -217,6 +217,8 @@ All endpoints return a standard envelope:
 }
 ```
 
+Bundled native extensions are embedded for `darwin/arm64`, `darwin/amd64`, `linux/amd64`, `linux/arm64`, and `windows/amd64`. Explicit extension paths remain optional overrides.
+
 ### Memory Operations
 
 | Endpoint | Method | Description |

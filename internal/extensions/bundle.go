@@ -56,20 +56,27 @@ func Resolve(name string) (string, bool, error) {
 }
 
 func assetSpec(name string) (fileName string, entry string, err error) {
-	platform := runtime.GOOS + "-" + runtime.GOARCH
+	return assetSpecForPlatform(name, runtime.GOOS, runtime.GOARCH)
+}
+
+func assetSpecForPlatform(name, goos, goarch string) (fileName string, entry string, err error) {
+	platform, ok := normalizePlatform(goos, goarch)
+	if !ok {
+		return "", "", fmt.Errorf("no bundled extension is available for platform %s/%s", goos, goarch)
+	}
 	switch name {
 	case NameCRSQLite:
-		fileName = dylibName("crsqlite")
+		fileName = libraryFileName(goos, "crsqlite")
 	case NameSQLiteVec:
-		fileName = dylibName("vec0")
+		fileName = libraryFileName(goos, "vec0")
 	default:
 		return "", "", fmt.Errorf("unknown extension: %s", name)
 	}
 	return fileName, filepath.Join("assets", platform, fileName), nil
 }
 
-func dylibName(base string) string {
-	switch runtime.GOOS {
+func libraryFileName(goos, base string) string {
+	switch goos {
 	case "darwin":
 		return base + ".dylib"
 	case "linux":
@@ -79,6 +86,27 @@ func dylibName(base string) string {
 	default:
 		return base
 	}
+}
+
+func normalizePlatform(goos, goarch string) (string, bool) {
+	switch goos {
+	case "darwin":
+		switch goarch {
+		case "amd64", "arm64":
+			return goos + "-" + goarch, true
+		}
+	case "linux":
+		switch goarch {
+		case "amd64", "arm64":
+			return goos + "-" + goarch, true
+		}
+	case "windows":
+		switch goarch {
+		case "amd64":
+			return goos + "-" + goarch, true
+		}
+	}
+	return "", false
 }
 
 func fileStem(name string) string {
