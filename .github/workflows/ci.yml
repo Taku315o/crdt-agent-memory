@@ -78,6 +78,22 @@ jobs:
         run: |
           chmod +x scripts/vendor-extensions.sh
           scripts/vendor-extensions.sh "${{ matrix.platform }}"
+      - name: Export native extension paths
+        run: |
+          case "${{ matrix.platform }}" in
+            darwin-*)
+              echo "CRSQLITE_PATH=$GITHUB_WORKSPACE/internal/extensions/assets/${{ matrix.platform }}/crsqlite.dylib" >> "$GITHUB_ENV"
+              echo "SQLITE_VEC_PATH=$GITHUB_WORKSPACE/internal/extensions/assets/${{ matrix.platform }}/vec0.dylib" >> "$GITHUB_ENV"
+              ;;
+            linux-*)
+              echo "CRSQLITE_PATH=$GITHUB_WORKSPACE/internal/extensions/assets/${{ matrix.platform }}/crsqlite.so" >> "$GITHUB_ENV"
+              echo "SQLITE_VEC_PATH=$GITHUB_WORKSPACE/internal/extensions/assets/${{ matrix.platform }}/vec0.so" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "unsupported test platform: ${{ matrix.platform }}" >&2
+              exit 1
+              ;;
+          esac
       - name: Check formatting
         run: test -z "$(git ls-files '*.go' | xargs gofmt -l)"
       - name: Vet
