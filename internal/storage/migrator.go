@@ -72,6 +72,7 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 		var alreadyApplied string
 		err := tx.QueryRowContext(ctx, `SELECT version FROM schema_migrations WHERE version = ?`, version).Scan(&alreadyApplied)
 		if err == nil {
+			// #nosec G304 -- migration filenames come from os.ReadDir on the fixed migrations directory.
 			content, readErr := os.ReadFile(filepath.Join(migrationsDir, version))
 			if readErr != nil {
 				return Metadata{}, readErr
@@ -83,6 +84,7 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 			return Metadata{}, err
 		}
 
+		// #nosec G304 -- migration filenames come from os.ReadDir on the fixed migrations directory.
 		content, err := os.ReadFile(filepath.Join(migrationsDir, version))
 		if err != nil {
 			return Metadata{}, err
@@ -104,9 +106,8 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 	}
 	if err == sql.ErrNoRows || appliedNewMigration {
 		for _, table := range sharedCRRTables {
-			query := fmt.Sprintf(`SELECT crsql_as_crr('%s')`, table)
 			var ignored any
-			if err := tx.QueryRowContext(ctx, query).Scan(&ignored); err != nil && !strings.Contains(err.Error(), "already") {
+			if err := tx.QueryRowContext(ctx, `SELECT crsql_as_crr(?)`, table).Scan(&ignored); err != nil && !strings.Contains(err.Error(), "already") {
 				return Metadata{}, fmt.Errorf("enable crr for %s: %w", table, err)
 			}
 		}

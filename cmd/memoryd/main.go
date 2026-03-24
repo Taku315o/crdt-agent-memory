@@ -101,8 +101,16 @@ func main() {
 			go runIndexWorker(ctx, indexer.NewWorker(db, 500*time.Millisecond))
 		}
 		go runScrubberWorker(ctx, server.Scrubber)
+		httpServer := &http.Server{
+			Addr:              cfg.API.ListenAddr,
+			Handler:           server.Handler(),
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
 		log.Printf("memoryd listening on %s", cfg.API.ListenAddr)
-		if err := http.ListenAndServe(cfg.API.ListenAddr, server.Handler()); err != nil {
+		if err := httpServer.ListenAndServe(); err != nil {
 			log.Fatal(err)
 		}
 	default:

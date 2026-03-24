@@ -43,7 +43,7 @@ func OpenSQLite(ctx context.Context, opts OpenOptions) (*sql.DB, error) {
 		}
 	}
 	driverName := registerDriver(resolved)
-	if err := os.MkdirAll(filepath.Dir(opts.Path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(opts.Path), 0o750); err != nil {
 		return nil, err
 	}
 	db, err := sql.Open(driverName, opts.Path)

@@ -17,6 +17,7 @@ func CRSQLitePath(t *testing.T) string {
 		if candidate == "" {
 			continue
 		}
+		// #nosec G304,G703 -- test helper paths are from controlled env vars or repo-local fixtures.
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
@@ -33,6 +34,7 @@ func SQLiteVecPath() string {
 		if candidate == "" {
 			continue
 		}
+		// #nosec G304,G703 -- test helper paths are from controlled env vars or repo-local fixtures.
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}

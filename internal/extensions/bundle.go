@@ -46,10 +46,10 @@ func Resolve(name string) (string, bool, error) {
 	if _, err := os.Stat(targetPath); err == nil {
 		return targetPath, true, nil
 	}
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+	if err := os.MkdirAll(targetDir, 0o750); err != nil {
 		return "", false, err
 	}
-	if err := os.WriteFile(targetPath, raw, 0o755); err != nil {
+	if err := os.WriteFile(targetPath, raw, 0o600); err != nil {
 		return "", false, err
 	}
 	return targetPath, true, nil
