@@ -82,6 +82,14 @@ type retrievalUnitRecord struct {
 	BranchName     string
 }
 
+type transcriptChunkRecord struct {
+	ChunkID      string
+	SessionID    string
+	ChunkKind    string
+	Text         string
+	AuthoredAtMS int64
+}
+
 func upsertRetrievalUnit(ctx context.Context, tx *sql.Tx, unit retrievalUnitRecord) error {
 	if unit.AuthoredAtMS == 0 {
 		unit.AuthoredAtMS = time.Now().UnixMilli()
@@ -579,15 +587,21 @@ func (s *Service) Promote(ctx context.Context, req PromoteRequest) (string, erro
 	bodies := make([]string, 0, len(req.ChunkIDs))
 	artifactSpans := make([]ArtifactSpanInput, 0)
 	seenArtifacts := map[string]struct{}{}
+	chunkRecords := make([]transcriptChunkRecord, 0, len(req.ChunkIDs))
 	for _, chunkID := range req.ChunkIDs {
-		var body string
-		if err := tx.QueryRowContext(ctx, `SELECT text FROM transcript_chunks WHERE chunk_id = ?`, chunkID).Scan(&body); err != nil {
+		var chunk transcriptChunkRecord
+		if err := tx.QueryRowContext(ctx, `
+			SELECT chunk_id, session_id, chunk_kind, text, authored_at_ms
+			FROM transcript_chunks
+			WHERE chunk_id = ?
+		`, chunkID).Scan(&chunk.ChunkID, &chunk.SessionID, &chunk.ChunkKind, &chunk.Text, &chunk.AuthoredAtMS); err != nil {
 			if err == sql.ErrNoRows {
 				return "", ErrMemoryNotFound
 			}
 			return "", err
 		}
-		bodies = append(bodies, body)
+		chunkRecords = append(chunkRecords, chunk)
+		bodies = append(bodies, chunk.Text)
 		spans, err := loadTranscriptArtifactInputs(ctx, tx, req.Namespace, chunkID)
 		if err != nil {
 			return "", err
@@ -627,6 +641,9 @@ func (s *Service) Promote(ctx context.Context, req PromoteRequest) (string, erro
 	if err := s.storeTx(ctx, tx, storeReq, signature); err != nil {
 		return "", err
 	}
+	if err := promoteInferredRelations(ctx, tx, storeReq.MemoryID, req.AuthoredAtMS, chunkRecords); err != nil {
+		return "", err
+	}
 	for _, chunkID := range req.ChunkIDs {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO transcript_promotions(promotion_id, chunk_id, memory_id, created_at_ms)
@@ -640,6 +657,79 @@ func (s *Service) Promote(ctx context.Context, req PromoteRequest) (string, erro
 		return "", err
 	}
 	return storeReq.MemoryID, nil
+}
+
+func promoteInferredRelations(ctx context.Context, tx *sql.Tx, memoryID string, authoredAtMS int64, chunks []transcriptChunkRecord) error {
+	if len(chunks) == 0 {
+		return nil
+	}
+	relationType, ok := inferPromotionRelationType(chunks)
+	if !ok {
+		return nil
+	}
+	sessionIDs := map[string]struct{}{}
+	for _, chunk := range chunks {
+		sessionIDs[chunk.SessionID] = struct{}{}
+	}
+	for sessionID := range sessionIDs {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT DISTINCT tp.memory_id
+			FROM transcript_promotions tp
+			JOIN transcript_chunks tc ON tc.chunk_id = tp.chunk_id
+			JOIN private_memory_nodes pmn ON pmn.memory_id = tp.memory_id
+			WHERE tc.session_id = ?
+			  AND tp.memory_id != ?
+			  AND pmn.memory_type = 'decision'
+		`, sessionID, memoryID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var targetID string
+			if err := rows.Scan(&targetID); err != nil {
+				rows.Close()
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO private_memory_edges(edge_id, from_memory_id, to_memory_id, relation_type, weight, authored_at_ms)
+				SELECT ?, ?, ?, ?, 1.0, ?
+				WHERE NOT EXISTS (
+					SELECT 1 FROM private_memory_edges
+					WHERE from_memory_id = ? AND to_memory_id = ? AND relation_type = ?
+				)
+			`, uuid.NewString(), memoryID, targetID, relationType, authoredAtMS, memoryID, targetID, relationType); err != nil {
+				rows.Close()
+				return err
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func inferPromotionRelationType(chunks []transcriptChunkRecord) (string, bool) {
+	combined := strings.ToLower("")
+	hasRationaleLike := false
+	hasContradiction := false
+	for _, chunk := range chunks {
+		combined += "\n" + strings.ToLower(chunk.Text)
+		switch chunk.ChunkKind {
+		case "rationale", "debug_trace", "task_candidate":
+			hasRationaleLike = true
+		}
+	}
+	if strings.Contains(combined, "contradict") || strings.Contains(combined, "instead") || strings.Contains(combined, "やめる") || strings.Contains(combined, "却下") {
+		hasContradiction = true
+	}
+	if hasContradiction {
+		return "contradicts", true
+	}
+	if hasRationaleLike {
+		return "supports", true
+	}
+	return "", false
 }
 
 func loadTranscriptArtifactInputs(ctx context.Context, tx *sql.Tx, namespace, chunkID string) ([]ArtifactSpanInput, error) {

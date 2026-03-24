@@ -119,6 +119,84 @@ func TestPromoteInheritsTranscriptArtifactSpans(t *testing.T) {
 	}
 }
 
+func TestPromoteInfersSupportRelationAndTraceDecisionReturnsTranscriptSources(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+	ctx := context.Background()
+	ingestSvc := ingest.NewService(fixture.db)
+
+	if err := ingestSvc.IngestSession(ctx, ingest.SessionIngestRequest{
+		SessionID:   "session-trace",
+		SourceKind:  "cli",
+		Namespace:   "crdt-agent-memory",
+		StartedAtMS: 100,
+		EndedAtMS:   200,
+		Messages: []ingest.SessionMessage{
+			{Seq: 1, Role: "user", Content: "方針は /Users/test/project/a.go を採用", AuthoredAtMS: 100},
+			{Seq: 2, Role: "assistant", Content: "decision: a.go を採用する", AuthoredAtMS: 110},
+			{Seq: 3, Role: "user", Content: "理由も残して", AuthoredAtMS: 120},
+			{Seq: 4, Role: "assistant", Content: "rationale: a.go は変更範囲が小さい", AuthoredAtMS: 130},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	decisionID, err := fixture.svc.Promote(ctx, PromoteRequest{
+		ChunkIDs:   []string{"session-trace:v1:1"},
+		Namespace:  "crdt-agent-memory",
+		MemoryType: "decision",
+		Subject:    "adopt a.go",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rationaleID, err := fixture.svc.Promote(ctx, PromoteRequest{
+		ChunkIDs:   []string{"session-trace:v1:2"},
+		Namespace:  "crdt-agent-memory",
+		MemoryType: "rationale",
+		Subject:    "why a.go",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var relationCount int
+	if err := fixture.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM private_memory_edges
+		WHERE from_memory_id = ? AND to_memory_id = ? AND relation_type = 'supports'
+	`, rationaleID, decisionID).Scan(&relationCount); err != nil {
+		t.Fatal(err)
+	}
+	if relationCount != 1 {
+		t.Fatalf("relation_count = %d, want 1", relationCount)
+	}
+
+	trace, err := fixture.svc.TraceDecision(ctx, TraceDecisionRequest{
+		MemorySpace: "private",
+		MemoryID:    rationaleID,
+		Depth:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trace.Supports) == 0 {
+		t.Fatal("expected inferred support relation in trace")
+	}
+	if len(trace.TranscriptSources) == 0 {
+		t.Fatal("expected transcript sources in trace")
+	}
+	hasArtifacts := false
+	for _, source := range trace.TranscriptSources {
+		if len(source.Artifacts) > 0 {
+			hasArtifacts = true
+			break
+		}
+	}
+	if !hasArtifacts {
+		t.Fatal("expected transcript artifacts in trace transcript sources")
+	}
+}
+
 func TestPublishAppliesDefaultRedactionPolicy(t *testing.T) {
 	fixture := newMemoryFixture(t, "peer-a")
 	ctx := context.Background()

@@ -178,10 +178,11 @@ type ExplainResponse struct {
 }
 
 type TraceDecisionResponse struct {
-	Decision       memory.TraceDecisionNode       `json:"decision"`
-	Supports       []memory.TraceDecisionHop      `json:"supports"`
-	Contradictions []memory.TraceDecisionHop      `json:"contradictions"`
-	Artifacts      []memory.TraceDecisionArtifact `json:"artifacts"`
+	Decision          memory.TraceDecisionNode       `json:"decision"`
+	Supports          []memory.TraceDecisionHop      `json:"supports"`
+	Contradictions    []memory.TraceDecisionHop      `json:"contradictions"`
+	Artifacts         []memory.TraceDecisionArtifact `json:"artifacts"`
+	TranscriptSources []memory.TraceTranscriptSource `json:"transcript_sources"`
 }
 
 type SyncStatusPeer struct {
@@ -374,10 +375,11 @@ func ExplainResponseFromResult(result memory.ExplainResult) ExplainResponse {
 
 func TraceDecisionResponseFromResult(result memory.TraceDecisionResult) TraceDecisionResponse {
 	return TraceDecisionResponse{
-		Decision:       result.Decision,
-		Supports:       result.Supports,
-		Contradictions: result.Contradictions,
-		Artifacts:      result.Artifacts,
+		Decision:          result.Decision,
+		Supports:          result.Supports,
+		Contradictions:    result.Contradictions,
+		Artifacts:         result.Artifacts,
+		TranscriptSources: result.TranscriptSources,
 	}
 }
 

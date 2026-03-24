@@ -172,11 +172,23 @@ type TraceDecisionArtifact struct {
 	QuoteHash   string `json:"quote_hash"`
 }
 
+type TraceTranscriptSource struct {
+	SessionID    string                  `json:"session_id"`
+	ChunkID      string                  `json:"chunk_id"`
+	ChunkKind    string                  `json:"chunk_kind"`
+	StartSeq     int                     `json:"start_seq"`
+	EndSeq       int                     `json:"end_seq"`
+	Text         string                  `json:"text"`
+	AuthoredAtMS int64                   `json:"authored_at_ms"`
+	Artifacts    []TraceDecisionArtifact `json:"artifacts"`
+}
+
 type TraceDecisionResult struct {
-	Decision       TraceDecisionNode       `json:"decision"`
-	Supports       []TraceDecisionHop      `json:"supports"`
-	Contradictions []TraceDecisionHop      `json:"contradictions"`
-	Artifacts      []TraceDecisionArtifact `json:"artifacts"`
+	Decision          TraceDecisionNode       `json:"decision"`
+	Supports          []TraceDecisionHop      `json:"supports"`
+	Contradictions    []TraceDecisionHop      `json:"contradictions"`
+	Artifacts         []TraceDecisionArtifact `json:"artifacts"`
+	TranscriptSources []TraceTranscriptSource `json:"transcript_sources"`
 }
 
 type ExplainProvenance struct {
