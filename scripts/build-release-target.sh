@@ -11,12 +11,17 @@ TARGET_OS="$2"
 TARGET_ARCH="$3"
 OUTPUT_DIR="$4"
 APP_NAME="crdt-agent-memory"
+if [[ "$OUTPUT_DIR" = /* ]]; then
+  OUTPUT_DIR_ABS="$OUTPUT_DIR"
+else
+  OUTPUT_DIR_ABS="$(pwd)/$OUTPUT_DIR"
+fi
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 STAGE_NAME="${APP_NAME}_${VERSION}_${TARGET_OS}_${TARGET_ARCH}"
 STAGE_DIR="$WORK_DIR/$STAGE_NAME"
-mkdir -p "$STAGE_DIR/bin" "$OUTPUT_DIR"
+mkdir -p "$STAGE_DIR/bin" "$OUTPUT_DIR_ABS"
 
 BIN_EXT=""
 if [ "$TARGET_OS" = "windows" ]; then
@@ -48,8 +53,8 @@ ARCHIVE_BASENAME="${STAGE_NAME}"
 if [ "$TARGET_OS" = "windows" ]; then
   (
     cd "$WORK_DIR"
-    zip -rq "$OUTPUT_DIR/${ARCHIVE_BASENAME}.zip" "$STAGE_NAME"
+    zip -rq "$OUTPUT_DIR_ABS/${ARCHIVE_BASENAME}.zip" "$STAGE_NAME"
   )
 else
-  tar -C "$WORK_DIR" -czf "$OUTPUT_DIR/${ARCHIVE_BASENAME}.tar.gz" "$STAGE_NAME"
+  tar -C "$WORK_DIR" -czf "$OUTPUT_DIR_ABS/${ARCHIVE_BASENAME}.tar.gz" "$STAGE_NAME"
 fi
