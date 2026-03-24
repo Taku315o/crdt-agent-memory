@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -575,6 +577,8 @@ func (s *Service) Promote(ctx context.Context, req PromoteRequest) (string, erro
 	defer tx.Rollback()
 
 	bodies := make([]string, 0, len(req.ChunkIDs))
+	artifactSpans := make([]ArtifactSpanInput, 0)
+	seenArtifacts := map[string]struct{}{}
 	for _, chunkID := range req.ChunkIDs {
 		var body string
 		if err := tx.QueryRowContext(ctx, `SELECT text FROM transcript_chunks WHERE chunk_id = ?`, chunkID).Scan(&body); err != nil {
@@ -584,6 +588,21 @@ func (s *Service) Promote(ctx context.Context, req PromoteRequest) (string, erro
 			return "", err
 		}
 		bodies = append(bodies, body)
+		spans, err := loadTranscriptArtifactInputs(ctx, tx, req.Namespace, chunkID)
+		if err != nil {
+			return "", err
+		}
+		for _, span := range spans {
+			key := span.ArtifactID + "|" + span.QuoteHash + "|" + fmt.Sprintf("%d:%d", span.StartOffset, span.EndOffset)
+			if _, ok := seenArtifacts[key]; ok {
+				continue
+			}
+			seenArtifacts[key] = struct{}{}
+			artifactSpans = append(artifactSpans, span)
+			if req.SourceURI == "" && span.URI != "" {
+				req.SourceURI = span.URI
+			}
+		}
 	}
 	body := strings.Join(bodies, "\n\n")
 	if req.Subject == "" {
@@ -599,6 +618,7 @@ func (s *Service) Promote(ctx context.Context, req PromoteRequest) (string, erro
 		AuthorAgentID: req.AuthorAgentID,
 		OriginPeerID:  req.OriginPeerID,
 		AuthoredAtMS:  req.AuthoredAtMS,
+		ArtifactSpans: artifactSpans,
 	}
 	storeReq, signature, err := s.prepareStore(storeReq)
 	if err != nil {
@@ -622,10 +642,60 @@ func (s *Service) Promote(ctx context.Context, req PromoteRequest) (string, erro
 	return storeReq.MemoryID, nil
 }
 
+func loadTranscriptArtifactInputs(ctx context.Context, tx *sql.Tx, namespace, chunkID string) ([]ArtifactSpanInput, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT
+			s.artifact_id,
+			COALESCE(r.uri, ''),
+			COALESCE(r.content_hash, ''),
+			COALESCE(r.title, ''),
+			COALESCE(r.mime_type, ''),
+			s.start_offset,
+			s.end_offset,
+			s.start_line,
+			s.end_line,
+			s.quote_hash
+		FROM transcript_artifact_spans s
+		LEFT JOIN private_artifact_refs r
+		  ON r.artifact_id = s.artifact_id
+		 AND r.local_namespace = ?
+		WHERE s.chunk_id = ?
+		ORDER BY s.start_offset, s.end_offset, s.span_id
+	`, namespace, chunkID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ArtifactSpanInput
+	for rows.Next() {
+		var item ArtifactSpanInput
+		if err := rows.Scan(
+			&item.ArtifactID,
+			&item.URI,
+			&item.ContentHash,
+			&item.Title,
+			&item.MimeType,
+			&item.StartOffset,
+			&item.EndOffset,
+			&item.StartLine,
+			&item.EndLine,
+			&item.QuoteHash,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (s *Service) Publish(ctx context.Context, req PublishRequest) (string, error) {
 	req.PrivateMemoryID = strings.TrimSpace(req.PrivateMemoryID)
 	if req.PrivateMemoryID == "" {
 		return "", errors.New("private_memory_id is required")
+	}
+	policy, err := normalizeRedactionPolicy(req.RedactionPolicy)
+	if err != nil {
+		return "", err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -654,6 +724,9 @@ func (s *Service) Publish(ctx context.Context, req PublishRequest) (string, erro
 		}
 		return "", err
 	}
+	row.Subject = redactText(row.Subject, policy)
+	row.Body = redactText(row.Body, policy)
+	row.SourceURI = redactSourceURI(row.SourceURI, policy)
 	row.Visibility = VisibilityShared
 	row, signature, err := s.prepareStore(row)
 	if err != nil {
@@ -673,4 +746,50 @@ func (s *Service) Publish(ctx context.Context, req PublishRequest) (string, erro
 		return "", err
 	}
 	return row.MemoryID, nil
+}
+
+func normalizeRedactionPolicy(policy string) (string, error) {
+	policy = strings.TrimSpace(strings.ToLower(policy))
+	if policy == "" {
+		policy = "default"
+	}
+	switch policy {
+	case "default", "strict":
+		return policy, nil
+	default:
+		return "", fmt.Errorf("redaction_policy must be default or strict")
+	}
+}
+
+var (
+	secretAssignmentPattern = regexp.MustCompile(`(?i)\b(api[_-]?key|token|password|secret)\b\s*[:=]\s*\S+`)
+	bearerPattern           = regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._-]+`)
+	userPathPattern         = regexp.MustCompile(`/(Users|home)/[^\s"']+`)
+	fileURIPattern          = regexp.MustCompile(`file://[^\s"']+`)
+)
+
+func redactText(text, policy string) string {
+	redacted := secretAssignmentPattern.ReplaceAllString(text, `$1=[REDACTED]`)
+	redacted = bearerPattern.ReplaceAllString(redacted, `Bearer [REDACTED]`)
+	redacted = fileURIPattern.ReplaceAllString(redacted, `file://[REDACTED_PATH]`)
+	redacted = userPathPattern.ReplaceAllString(redacted, `[REDACTED_PATH]`)
+	if policy == "strict" {
+		redacted = strings.ReplaceAll(redacted, "http://", "")
+		redacted = strings.ReplaceAll(redacted, "https://", "")
+	}
+	return redacted
+}
+
+func redactSourceURI(sourceURI, policy string) string {
+	sourceURI = strings.TrimSpace(sourceURI)
+	if sourceURI == "" {
+		return ""
+	}
+	if strings.HasPrefix(sourceURI, "/") || strings.HasPrefix(strings.ToLower(sourceURI), "file://") {
+		return ""
+	}
+	if policy == "strict" {
+		return ""
+	}
+	return sourceURI
 }

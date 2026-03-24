@@ -89,3 +89,36 @@ func TestIngestSessionMarksSecretChunks(t *testing.T) {
 		t.Fatalf("sensitivity = %q, want secret", sensitivity)
 	}
 }
+
+func TestIngestSessionExtractsTranscriptArtifactSpans(t *testing.T) {
+	ctx := context.Background()
+	db, svc := newFixture(t)
+	err := svc.IngestSession(ctx, SessionIngestRequest{
+		SessionID:   "session-artifact",
+		SourceKind:  "cli",
+		Namespace:   "crdt-agent-memory",
+		StartedAtMS: 100,
+		EndedAtMS:   200,
+		Messages: []SessionMessage{
+			{Seq: 1, Role: "user", Content: "見て /Users/test/project/main.go を確認して", AuthoredAtMS: 100},
+			{Seq: 2, Role: "assistant", Content: "https://example.com/spec も参照する", AuthoredAtMS: 110},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var spanCount, refCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM transcript_artifact_spans WHERE chunk_id = 'session-artifact:v1:1'`).Scan(&spanCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM private_artifact_refs WHERE local_namespace = 'crdt-agent-memory'`).Scan(&refCount); err != nil {
+		t.Fatal(err)
+	}
+	if spanCount < 2 {
+		t.Fatalf("span_count = %d, want at least 2", spanCount)
+	}
+	if refCount < 2 {
+		t.Fatalf("ref_count = %d, want at least 2", refCount)
+	}
+}

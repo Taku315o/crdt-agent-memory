@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -273,6 +274,7 @@ func buildChunks(sessionID, sensitivity string, messages []SessionMessage) []Chu
 }
 
 var secretPattern = regexp.MustCompile(`(?i)(api[_-]?key|token|password|secret)`)
+var artifactPattern = regexp.MustCompile(`(?i)(file://[^\s"'` + "`" + `]+|https?://[^\s"'` + "`" + `]+|/(?:Users|home|tmp|var|etc|opt)/[^\s"'` + "`" + `]+)`)
 
 func effectiveSensitivity(defaultSensitivity, text string) string {
 	if secretPattern.MatchString(text) {
@@ -350,8 +352,57 @@ func upsertChunks(ctx context.Context, tx *sql.Tx, req SessionIngestRequest, chu
 		`, uuid.NewString(), chunk.ChunkID, time.Now().UnixMilli()); err != nil {
 			return err
 		}
+		if err := upsertTranscriptArtifacts(ctx, tx, req.Namespace, chunk); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func upsertTranscriptArtifacts(ctx context.Context, tx *sql.Tx, namespace string, chunk Chunk) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM transcript_artifact_spans WHERE chunk_id = ?`, chunk.ChunkID); err != nil {
+		return err
+	}
+	matches := artifactPattern.FindAllStringIndex(chunk.Text, -1)
+	for _, match := range matches {
+		start, end := match[0], match[1]
+		uri := chunk.Text[start:end]
+		artifactID := "artifact_" + digest(uri)
+		title := path.Base(strings.TrimPrefix(uri, "file://"))
+		startLine, endLine := lineRange(chunk.Text, start, end)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO private_artifact_refs(artifact_id, local_namespace, uri, content_hash, title, mime_type, authored_at_ms)
+			VALUES(?, ?, ?, ?, ?, '', ?)
+			ON CONFLICT(artifact_id) DO UPDATE SET
+				local_namespace = excluded.local_namespace,
+				uri = excluded.uri,
+				content_hash = excluded.content_hash,
+				title = excluded.title,
+				authored_at_ms = excluded.authored_at_ms
+		`, artifactID, namespace, uri, digest(uri), title, chunk.AuthoredAtMS); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO transcript_artifact_spans(
+				span_id, chunk_id, artifact_id, start_offset, end_offset, start_line, end_line, quote_hash, authored_at_ms
+			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, uuid.NewString(), chunk.ChunkID, artifactID, start, end, startLine, endLine, digest(uri), chunk.AuthoredAtMS); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func lineRange(text string, start, end int) (int, int) {
+	if start < 0 {
+		start = 0
+	}
+	if end < start {
+		end = start
+	}
+	startLine := 1 + strings.Count(text[:start], "\n")
+	endLine := 1 + strings.Count(text[:end], "\n")
+	return startLine, endLine
 }
 
 func digest(v string) string {
