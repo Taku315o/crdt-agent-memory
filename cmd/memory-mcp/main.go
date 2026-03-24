@@ -71,12 +71,34 @@ type storeToolRequest struct {
 }
 
 type recallToolRequest struct {
-	Query          string   `json:"query"`
-	Namespace      string   `json:"namespace,omitempty"`
-	Namespaces     []string `json:"namespaces,omitempty"`
-	TopK           int      `json:"top_k,omitempty"`
-	IncludePrivate bool     `json:"include_private,omitempty"`
-	Limit          int      `json:"limit,omitempty"`
+	Query             string   `json:"query"`
+	Namespace         string   `json:"namespace,omitempty"`
+	Namespaces        []string `json:"namespaces,omitempty"`
+	TopK              int      `json:"top_k,omitempty"`
+	IncludePrivate    bool     `json:"include_private,omitempty"`
+	IncludeShared     bool     `json:"include_shared,omitempty"`
+	IncludeTranscript bool     `json:"include_transcript,omitempty"`
+	ProjectKey        string   `json:"project_key,omitempty"`
+	BranchName        string   `json:"branch_name,omitempty"`
+	UnitKinds         []string `json:"unit_kinds,omitempty"`
+	SourceTypes       []string `json:"source_types,omitempty"`
+	Limit             int      `json:"limit,omitempty"`
+}
+
+type promoteToolRequest struct {
+	ChunkIDs      []string `json:"chunk_ids"`
+	MemoryType    string   `json:"memory_type,omitempty"`
+	Subject       string   `json:"subject,omitempty"`
+	Namespace     string   `json:"namespace"`
+	AuthorAgentID string   `json:"author_agent_id,omitempty"`
+	OriginPeerID  string   `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64    `json:"authored_at_ms,omitempty"`
+	SourceURI     string   `json:"source_uri,omitempty"`
+}
+
+type publishToolRequest struct {
+	PrivateMemoryID string `json:"private_memory_id"`
+	RedactionPolicy string `json:"redaction_policy,omitempty"`
 }
 
 type memoryRef struct {
@@ -261,14 +283,50 @@ func toolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"query":           map[string]any{"type": "string"},
-					"namespace":       map[string]any{"type": "string"},
-					"namespaces":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					"top_k":           map[string]any{"type": "integer"},
-					"include_private": map[string]any{"type": "boolean"},
-					"limit":           map[string]any{"type": "integer"},
+					"query":              map[string]any{"type": "string"},
+					"namespace":          map[string]any{"type": "string"},
+					"namespaces":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"top_k":              map[string]any{"type": "integer"},
+					"include_private":    map[string]any{"type": "boolean"},
+					"include_shared":     map[string]any{"type": "boolean"},
+					"include_transcript": map[string]any{"type": "boolean"},
+					"project_key":        map[string]any{"type": "string"},
+					"branch_name":        map[string]any{"type": "string"},
+					"unit_kinds":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"source_types":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"limit":              map[string]any{"type": "integer"},
 				},
 				"required": []string{"query"},
+			},
+		},
+		{
+			"name":        "memory.promote",
+			"description": "promote transcript chunks into a private structured memory",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"chunk_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"memory_type":     map[string]any{"type": "string"},
+					"subject":         map[string]any{"type": "string"},
+					"namespace":       map[string]any{"type": "string"},
+					"author_agent_id": map[string]any{"type": "string"},
+					"origin_peer_id":  map[string]any{"type": "string"},
+					"authored_at_ms":  map[string]any{"type": "integer"},
+					"source_uri":      map[string]any{"type": "string"},
+				},
+				"required": []string{"chunk_ids", "namespace"},
+			},
+		},
+		{
+			"name":        "memory.publish",
+			"description": "publish a private structured memory into shared memory",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"private_memory_id": map[string]any{"type": "string"},
+					"redaction_policy":  map[string]any{"type": "string"},
+				},
+				"required": []string{"private_memory_id"},
 			},
 		},
 		{
@@ -428,6 +486,32 @@ func callTool(cfg config.Config, params toolCallParams) (any, map[string]any) {
 			return nil, map[string]any{"code": -32602, "message": "query is required"}
 		}
 		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/recall", nil, args)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	case "memory.promote":
+		var args promoteToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if len(args.ChunkIDs) == 0 || strings.TrimSpace(args.Namespace) == "" {
+			return nil, map[string]any{"code": -32602, "message": "chunk_ids and namespace are required"}
+		}
+		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/promote", nil, args)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	case "memory.publish":
+		var args publishToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if strings.TrimSpace(args.PrivateMemoryID) == "" {
+			return nil, map[string]any{"code": -32602, "message": "private_memory_id is required"}
+		}
+		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/publish", nil, args)
 		if err != nil {
 			return nil, rpcErrorFromEnvelope(payload, err)
 		}

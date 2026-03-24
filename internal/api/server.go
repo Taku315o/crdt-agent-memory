@@ -29,6 +29,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/diag", s.handleDiag)
 	mux.HandleFunc("/v1/memory/store", s.handleStore)
 	mux.HandleFunc("/v1/memory/recall", s.handleRecall)
+	mux.HandleFunc("/v1/memory/promote", s.handlePromote)
+	mux.HandleFunc("/v1/memory/publish", s.handlePublish)
 	mux.HandleFunc("/v1/memory/supersede", s.handleSupersede)
 	mux.HandleFunc("/v1/memory/signal", s.handleSignal)
 	mux.HandleFunc("/v1/memory/explain", s.handleExplain)
@@ -106,10 +108,16 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		limit = req.TopK
 	}
 	results, err := s.Memory.Recall(r.Context(), memory.RecallRequest{
-		Query:          req.Query,
-		Namespaces:     namespaces,
-		IncludePrivate: req.IncludePrivate,
-		Limit:          limit,
+		Query:             req.Query,
+		Namespaces:        namespaces,
+		IncludePrivate:    req.IncludePrivate,
+		IncludeShared:     req.IncludeShared,
+		IncludeTranscript: req.IncludeTranscript,
+		ProjectKey:        req.ProjectKey,
+		BranchName:        req.BranchName,
+		UnitKinds:         req.UnitKinds,
+		SourceTypes:       req.SourceTypes,
+		Limit:             limit,
 	})
 	if err != nil {
 		s.writeMemoryError(w, requestID, err)
@@ -120,6 +128,44 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		items = append(items, RecallItemFromResult(item))
 	}
 	s.writeOK(w, requestID, RecallResponse{Items: items})
+}
+
+func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "", "METHOD_NOT_ALLOWED", "method not allowed", false, nil)
+		return
+	}
+	requestID := NewRequestID()
+	var req PromoteRequest
+	if err := decodeRequest(r.Body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		return
+	}
+	id, err := s.Memory.Promote(r.Context(), req.ToMemoryRequest())
+	if err != nil {
+		s.writeMemoryError(w, requestID, err)
+		return
+	}
+	s.writeOK(w, requestID, PromoteResponse{PrivateMemoryID: id})
+}
+
+func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "", "METHOD_NOT_ALLOWED", "method not allowed", false, nil)
+		return
+	}
+	requestID := NewRequestID()
+	var req PublishRequest
+	if err := decodeRequest(r.Body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		return
+	}
+	id, err := s.Memory.Publish(r.Context(), req.ToMemoryRequest())
+	if err != nil {
+		s.writeMemoryError(w, requestID, err)
+		return
+	}
+	s.writeOK(w, requestID, PublishResponse{SharedMemoryID: id})
 }
 
 func (s *Server) handleSupersede(w http.ResponseWriter, r *http.Request) {

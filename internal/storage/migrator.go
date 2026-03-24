@@ -137,6 +137,16 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 		if _, err := tx.ExecContext(ctx, vecDDL); err != nil {
 			return Metadata{}, fmt.Errorf("create vector index: %w", err)
 		}
+		retrievalVecDDL := `
+			CREATE VIRTUAL TABLE IF NOT EXISTS retrieval_embedding_vectors USING vec0(
+				memory_space TEXT PARTITION KEY,
+				unit_id TEXT,
+				embedding FLOAT[8]
+			)
+		`
+		if _, err := tx.ExecContext(ctx, retrievalVecDDL); err != nil {
+			return Metadata{}, fmt.Errorf("create retrieval vector index: %w", err)
+		}
 	}
 
 	meta := Metadata{

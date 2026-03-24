@@ -52,16 +52,25 @@ type StoreRequest struct {
 }
 
 type RecallRequest struct {
-	Query          string   `json:"query"`
-	Namespaces     []string `json:"namespaces,omitempty"`
-	IncludePrivate bool     `json:"include_private,omitempty"`
-	Limit          int      `json:"limit,omitempty"`
+	Query             string   `json:"query"`
+	Namespaces        []string `json:"namespaces,omitempty"`
+	IncludePrivate    bool     `json:"include_private,omitempty"`
+	IncludeShared     bool     `json:"include_shared,omitempty"`
+	IncludeTranscript bool     `json:"include_transcript,omitempty"`
+	ProjectKey        string   `json:"project_key,omitempty"`
+	BranchName        string   `json:"branch_name,omitempty"`
+	UnitKinds         []string `json:"unit_kinds,omitempty"`
+	SourceTypes       []string `json:"source_types,omitempty"`
+	Limit             int      `json:"limit,omitempty"`
 }
 
 type RecallResult struct {
+	UnitID         string `json:"unit_id"`
+	SourceType     string `json:"source_type"`
 	MemorySpace    string `json:"memory_space"`
 	MemoryID       string `json:"memory_id"`
 	Namespace      string `json:"namespace"`
+	UnitKind       string `json:"unit_kind"`
 	MemoryType     string `json:"memory_type"`
 	Subject        string `json:"subject"`
 	Body           string `json:"body"`
@@ -70,6 +79,22 @@ type RecallResult struct {
 	SourceURI      string `json:"source_uri"`
 	SourceHash     string `json:"source_hash"`
 	OriginPeerID   string `json:"origin_peer_id"`
+}
+
+type PromoteRequest struct {
+	ChunkIDs      []string `json:"chunk_ids"`
+	MemoryType    string   `json:"memory_type,omitempty"`
+	Subject       string   `json:"subject,omitempty"`
+	Namespace     string   `json:"namespace"`
+	AuthorAgentID string   `json:"author_agent_id,omitempty"`
+	OriginPeerID  string   `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64    `json:"authored_at_ms,omitempty"`
+	SourceURI     string   `json:"source_uri,omitempty"`
+}
+
+type PublishRequest struct {
+	PrivateMemoryID string `json:"private_memory_id"`
+	RedactionPolicy string `json:"redaction_policy,omitempty"`
 }
 
 type SignalRequest struct {

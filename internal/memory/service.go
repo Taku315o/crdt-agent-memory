@@ -53,22 +53,6 @@ func (s *Service) Store(ctx context.Context, req StoreRequest) (string, error) {
 // Recall is a fused lexical+semantic+trust+graph+artifact reranker when
 // sqlite-vec is available, and degrades to lexical+trust+graph+artifact when
 // it is not.
-func (s *Service) Recall(ctx context.Context, req RecallRequest) ([]RecallResult, error) {
-	req.Query = strings.TrimSpace(req.Query)
-	if req.Query == "" {
-		return nil, errors.New("query is required")
-	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 10
-	}
-	vectorEnabled, err := s.vectorIndexEnabled(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return s.recallHybrid(ctx, req, limit, vectorEnabled)
-}
-
 func (s *Service) recallWithVector(ctx context.Context, req RecallRequest, limit int) ([]RecallResult, error) {
 	candidateLimit := limit * 10
 	if candidateLimit < 50 {
@@ -1194,6 +1178,9 @@ func (s *Service) storeTx(ctx context.Context, tx *sql.Tx, req StoreRequest, sig
 	if err := insertRelations(ctx, tx, req); err != nil {
 		return err
 	}
+	if err := s.upsertRetrievalUnitForStore(ctx, tx, req); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO index_queue(queue_id, memory_space, memory_id, enqueued_at_ms)
 		VALUES(?, ?, ?, ?)
@@ -1434,22 +1421,25 @@ func (s *Service) loadExplainRecord(ctx context.Context, req ExplainRequest) (ex
 }
 
 func (s *Service) lookupLexicalBM25(ctx context.Context, req ExplainRequest) (float64, bool, error) {
-	var lexicalBM25 float64
+	var matched int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT bm25(memory_fts)
+		SELECT COUNT(*)
 		FROM memory_fts
-		WHERE memory_fts MATCH ?
+		WHERE (lower(subject) LIKE ? OR lower(body) LIKE ?)
 		  AND memory_space = ?
 		  AND memory_id = ?
 		LIMIT 1
-	`, req.Query, req.MemorySpace, req.MemoryID).Scan(&lexicalBM25)
+	`, "%"+strings.ToLower(req.Query)+"%", "%"+strings.ToLower(req.Query)+"%", req.MemorySpace, req.MemoryID).Scan(&matched)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return 0, false, nil
 		}
 		return 0, false, err
 	}
-	return lexicalBM25, true, nil
+	if matched == 0 {
+		return 0, false, nil
+	}
+	return 1, true, nil
 }
 
 func (s *Service) loadSignalSummary(ctx context.Context, memorySpace, memoryID string) (map[string]ExplainSignalSummary, error) {
