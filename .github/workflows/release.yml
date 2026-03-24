@@ -64,7 +64,7 @@ jobs:
             artifact_name: windows-amd64
             apt_packages: 'mingw-w64'
             cc: x86_64-w64-mingw32-gcc
-          - runner: macos-13
+          - runner: macos-15-intel
             target_os: darwin
             target_arch: amd64
             platform: darwin-amd64
@@ -127,7 +127,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum * > checksums.txt
+          sha256sum ./* > checksums.txt
       - name: Generate CycloneDX SBOM
         run: |
           go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
