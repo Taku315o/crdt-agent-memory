@@ -119,6 +119,7 @@ func (s *Service) ExtractBatch(ctx context.Context, peerID, namespace string, li
 		placeholders = append(placeholders, "?")
 		args = append(args, version)
 	}
+	// #nosec G201 -- placeholders are generated internally for a variable-length IN clause.
 	query := fmt.Sprintf(`
 		SELECT "table", pk, cid, val, col_version, db_version, site_id, cl, seq
 		FROM crsql_changes

@@ -18,23 +18,23 @@ type HandshakeResponse struct {
 }
 
 type Value struct {
-	Null   bool    `json:"null,omitempty"`
-	Integer *int64  `json:"integer,omitempty"`
+	Null    bool     `json:"null,omitempty"`
+	Integer *int64   `json:"integer,omitempty"`
 	Float   *float64 `json:"float,omitempty"`
-	Text    *string `json:"text,omitempty"`
-	BlobB64 *string `json:"blob_b64,omitempty"`
+	Text    *string  `json:"text,omitempty"`
+	BlobB64 *string  `json:"blob_b64,omitempty"`
 }
 
 type Change struct {
-	Table     string `json:"table"`
-	PKB64     string `json:"pk_b64"`
-	CID       string `json:"cid"`
-	Val       Value  `json:"val"`
-	ColVersion int64 `json:"col_version"`
-	DBVersion int64  `json:"db_version"`
-	SiteIDB64 string `json:"site_id_b64"`
-	CL        int64  `json:"cl"`
-	Seq       int64  `json:"seq"`
+	Table      string `json:"table"`
+	PKB64      string `json:"pk_b64"`
+	CID        string `json:"cid"`
+	Val        Value  `json:"val"`
+	ColVersion int64  `json:"col_version"`
+	DBVersion  int64  `json:"db_version"`
+	SiteIDB64  string `json:"site_id_b64"`
+	CL         int64  `json:"cl"`
+	Seq        int64  `json:"seq"`
 }
 
 type Batch struct {
@@ -77,11 +77,11 @@ type TrackedPeer struct {
 }
 
 type Diagnostics struct {
-	SchemaHash      string      `json:"schema_hash"`
-	CRRManifestHash string      `json:"crr_manifest_hash"`
+	SchemaHash      string        `json:"schema_hash"`
+	CRRManifestHash string        `json:"crr_manifest_hash"`
 	TrackedPeers    []TrackedPeer `json:"tracked_peers"`
-	PeerStates      []PeerState `json:"peer_states"`
-	QuarantineCount int         `json:"quarantine_count"`
+	PeerStates      []PeerState   `json:"peer_states"`
+	QuarantineCount int           `json:"quarantine_count"`
 }
 
 type SyncStatus struct {

@@ -35,19 +35,19 @@ var (
 )
 
 type StoreRequest struct {
-	MemoryID      string              `json:"memory_id,omitempty"`
-	Visibility    Visibility          `json:"visibility"`
-	Namespace     string              `json:"namespace"`
-	MemoryType    string              `json:"memory_type,omitempty"`
-	Scope         string              `json:"scope,omitempty"`
-	Subject       string              `json:"subject,omitempty"`
-	Body          string              `json:"body"`
-	SourceURI     string              `json:"source_uri,omitempty"`
-	SourceHash    string              `json:"source_hash,omitempty"`
-	AuthorAgentID string              `json:"author_agent_id,omitempty"`
-	OriginPeerID  string              `json:"origin_peer_id,omitempty"`
-	AuthoredAtMS  int64               `json:"authored_at_ms,omitempty"`
-	ArtifactSpans []ArtifactSpanInput `json:"artifact_spans,omitempty"`
+	MemoryID      string                `json:"memory_id,omitempty"`
+	Visibility    Visibility            `json:"visibility"`
+	Namespace     string                `json:"namespace"`
+	MemoryType    string                `json:"memory_type,omitempty"`
+	Scope         string                `json:"scope,omitempty"`
+	Subject       string                `json:"subject,omitempty"`
+	Body          string                `json:"body"`
+	SourceURI     string                `json:"source_uri,omitempty"`
+	SourceHash    string                `json:"source_hash,omitempty"`
+	AuthorAgentID string                `json:"author_agent_id,omitempty"`
+	OriginPeerID  string                `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64                 `json:"authored_at_ms,omitempty"`
+	ArtifactSpans []ArtifactSpanInput   `json:"artifact_spans,omitempty"`
 	Relations     []MemoryRelationInput `json:"relations,omitempty"`
 }
 

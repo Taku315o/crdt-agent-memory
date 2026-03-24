@@ -193,10 +193,6 @@ namespaces:
   - "team/research"
   - "project/llm-optimization"
 
-extensions:
-  crsqlite_path: "/path/to/crsqlite.dylib"
-  sqlite_vec_path: "/path/to/vec0.dylib"
-
 transport:
   discovery_profile: "dev-default"
   relay_profile: "dev-default"
@@ -220,6 +216,8 @@ All endpoints return a standard envelope:
   "request_id": "req_01H..."
 }
 ```
+
+Bundled native extensions are embedded for `darwin/arm64`, `darwin/amd64`, `linux/amd64`, `linux/arm64`, and `windows/amd64`. Explicit extension paths remain optional overrides.
 
 ### Memory Operations
 

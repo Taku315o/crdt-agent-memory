@@ -11,6 +11,7 @@ import (
 
 	"crdt-agent-memory/internal/api"
 	"crdt-agent-memory/internal/config"
+	"crdt-agent-memory/internal/indexer"
 	"crdt-agent-memory/internal/memsync"
 	"crdt-agent-memory/internal/policy"
 	"crdt-agent-memory/internal/scrubber"
@@ -21,8 +22,10 @@ import (
 func main() {
 	var configPath string
 	var command string
+	var withIndexer bool
 	flag.StringVar(&configPath, "config", "", "path to config yaml")
 	flag.StringVar(&command, "cmd", "serve", "command: migrate|diag|serve")
+	flag.BoolVar(&withIndexer, "with-indexer", false, "run the index worker in-process")
 	flag.Parse()
 
 	if configPath == "" {
@@ -94,13 +97,33 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		if withIndexer {
+			go runIndexWorker(ctx, indexer.NewWorker(db, 500*time.Millisecond))
+		}
 		go runScrubberWorker(ctx, server.Scrubber)
+		httpServer := &http.Server{
+			Addr:              cfg.API.ListenAddr,
+			Handler:           server.Handler(),
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
 		log.Printf("memoryd listening on %s", cfg.API.ListenAddr)
-		if err := http.ListenAndServe(cfg.API.ListenAddr, server.Handler()); err != nil {
+		if err := httpServer.ListenAndServe(); err != nil {
 			log.Fatal(err)
 		}
 	default:
 		log.Fatalf("unsupported cmd: %s", command)
+	}
+}
+
+func runIndexWorker(ctx context.Context, worker *indexer.Worker) {
+	if worker == nil {
+		return
+	}
+	if err := worker.Run(ctx); err != nil && err != context.Canceled {
+		log.Printf("index worker stopped: %v", err)
 	}
 }
 

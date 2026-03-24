@@ -5,18 +5,25 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"crdt-agent-memory/internal/extensions"
 )
 
 func CRSQLitePath(t *testing.T) string {
 	t.Helper()
-	for _, candidate := range []string{
+	candidates := []string{
 		os.Getenv("CRSQLITE_PATH"),
 		filepath.Join(repoRoot(t), ".tools", "crsqlite", "crsqlite.dylib"),
 		"/tmp/crsqlite-check/crsqlite.dylib",
-	} {
+	}
+	if bundled, ok, err := extensions.Resolve(extensions.NameCRSQLite); err == nil && ok {
+		candidates = append([]string{bundled}, candidates...)
+	}
+	for _, candidate := range candidates {
 		if candidate == "" {
 			continue
 		}
+		// #nosec G304,G703 -- test helper paths are from controlled env vars or repo-local fixtures.
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
@@ -26,13 +33,18 @@ func CRSQLitePath(t *testing.T) string {
 }
 
 func SQLiteVecPath() string {
-	for _, candidate := range []string{
+	candidates := []string{
 		os.Getenv("SQLITE_VEC_PATH"),
 		filepath.Join(repoRootNoTest(), ".tools", "sqlite-vec", "vec0.dylib"),
-	} {
+	}
+	if bundled, ok, err := extensions.Resolve(extensions.NameSQLiteVec); err == nil && ok {
+		candidates = append([]string{bundled}, candidates...)
+	}
+	for _, candidate := range candidates {
 		if candidate == "" {
 			continue
 		}
+		// #nosec G304,G703 -- test helper paths are from controlled env vars or repo-local fixtures.
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}

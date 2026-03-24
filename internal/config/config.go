@@ -56,6 +56,7 @@ type PeerRegistryEntry struct {
 }
 
 func Load(path string) (Config, error) {
+	// #nosec G304 -- config path is explicitly supplied by the operator/CLI.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, err
@@ -92,9 +93,6 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.SigningKeyPath) == "" {
 		return errors.New("signing_key_path is required")
-	}
-	if strings.TrimSpace(c.Extensions.CRSQLitePath) == "" {
-		return errors.New("extensions.crsqlite_path is required")
 	}
 	if strings.TrimSpace(c.API.ListenAddr) == "" {
 		return errors.New("api.listen_addr is required")

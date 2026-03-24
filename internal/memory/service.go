@@ -3,9 +3,9 @@ package memory
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"encoding/json"
 	"sort"
 	"strings"
 	"sync"
@@ -18,8 +18,8 @@ import (
 )
 
 type Service struct {
-	db     *sql.DB
-	signer signing.Signer
+	db      *sql.DB
+	signer  signing.Signer
 	vecOnce sync.Once
 	vecOK   bool
 	vecErr  error
@@ -136,7 +136,8 @@ func (s *Service) recallWithVector(ctx context.Context, req RecallRequest, limit
 			placeholders = append(placeholders, "?")
 			args = append(args, ns)
 		}
-		query += fmt.Sprintf(" AND v.namespace IN (%s)", strings.Join(placeholders, ","))
+		// #nosec G202 -- placeholders are generated internally for namespace binding.
+		query += fmt.Sprintf(" AND v.namespace IN (%s)", strings.Join(placeholders, ",")) // #nosec G202 -- placeholders are generated internally for namespace binding.
 	}
 	query += `
 		ORDER BY
@@ -187,12 +188,18 @@ func (s *Service) recallWithFTS(ctx context.Context, req RecallRequest, limit in
 		query += ` AND v.memory_space = 'shared'`
 	}
 	if len(req.Namespaces) > 0 {
-		placeholders := make([]string, 0, len(req.Namespaces))
+		var namespaceClause strings.Builder
+		namespaceClause.WriteString(" AND v.namespace IN (")
 		for _, ns := range req.Namespaces {
-			placeholders = append(placeholders, "?")
+			if namespaceClause.Len() > len(" AND v.namespace IN (") {
+				namespaceClause.WriteString(",")
+			}
+			namespaceClause.WriteString("?")
 			args = append(args, ns)
 		}
-		query += fmt.Sprintf(" AND v.namespace IN (%s)", strings.Join(placeholders, ","))
+		namespaceClause.WriteString(")")
+		// #nosec G202 -- namespace clause is built only from internally generated placeholders.
+		query += namespaceClause.String()
 	}
 	query += `
 		ORDER BY
@@ -243,28 +250,28 @@ type recallKey struct {
 }
 
 type recallCandidate struct {
-	key             recallKey
-	semanticRank    int
-	lexicalRank     int
+	key              recallKey
+	semanticRank     int
+	lexicalRank      int
 	semanticDistance float64
-	lexicalBM25     float64
+	lexicalBM25      float64
 }
 
 type recallCandidateRow struct {
 	key recallKey
 	RecallResult
-	SignatureStatus string
-	HasSignature    bool
-	TrustWeight     float64
-	SemanticRank    int
-	LexicalRank     int
+	SignatureStatus  string
+	HasSignature     bool
+	TrustWeight      float64
+	SemanticRank     int
+	LexicalRank      int
 	SemanticDistance float64
-	LexicalBM25     float64
+	LexicalBM25      float64
 }
 
 type recallGraphStat struct {
-	EdgeCount       int
-	SupportWeight   float64
+	EdgeCount        int
+	SupportWeight    float64
 	ContradictWeight float64
 }
 
@@ -274,9 +281,9 @@ type recallArtifactStat struct {
 }
 
 type scoredRecallRow struct {
-	row        recallCandidateRow
-	score      float64
-	bucket     int
+	row         recallCandidateRow
+	score       float64
+	bucket      int
 	trustWeight float64
 }
 
@@ -421,12 +428,17 @@ func (s *Service) collectVectorRecallCandidates(ctx context.Context, req RecallR
 		query += ` AND v.memory_space = 'shared'`
 	}
 	if len(req.Namespaces) > 0 {
-		placeholders := make([]string, 0, len(req.Namespaces))
+		var namespaceClause strings.Builder
+		namespaceClause.WriteString(" AND v.namespace IN (")
 		for _, ns := range req.Namespaces {
-			placeholders = append(placeholders, "?")
+			if namespaceClause.Len() > len(" AND v.namespace IN (") {
+				namespaceClause.WriteString(",")
+			}
+			namespaceClause.WriteString("?")
 			args = append(args, ns)
 		}
-		query += fmt.Sprintf(" AND v.namespace IN (%s)", strings.Join(placeholders, ","))
+		namespaceClause.WriteString(")")
+		query += namespaceClause.String() // #nosec G202 -- namespace clause is built only from internally generated placeholders.
 	}
 	query += `
 		ORDER BY c.distance
@@ -468,6 +480,7 @@ func (s *Service) collectFTSRecallCandidates(ctx context.Context, req RecallRequ
 			placeholders = append(placeholders, "?")
 			args = append(args, ns)
 		}
+		// #nosec G202 -- placeholders are generated internally for namespace binding.
 		query += fmt.Sprintf(" AND namespace IN (%s)", strings.Join(placeholders, ","))
 	}
 	query += `
@@ -501,6 +514,7 @@ func (s *Service) loadRecallCandidateRows(ctx context.Context, candidates []reca
 		return nil, nil
 	}
 	cte, args := buildRecallCandidateCTE(candidates)
+	// #nosec G202 -- CTE is generated locally from parameter placeholders, not raw user SQL.
 	query := cte + `
 		SELECT
 			v.memory_space,
@@ -637,6 +651,7 @@ func (s *Service) loadRecallGraphStatsForSpace(ctx context.Context, memorySpace 
 	}
 	args = append(args, append([]any(nil), args...)...)
 
+	// #nosec G201 -- table names are selected from a fixed enum and placeholders are generated internally.
 	query := fmt.Sprintf(`
 		SELECT memory_id, SUM(edge_count), SUM(support_weight), SUM(contradict_weight)
 		FROM (
@@ -707,6 +722,7 @@ func (s *Service) loadRecallArtifactStatsForSpace(ctx context.Context, memorySpa
 		placeholders = append(placeholders, "?")
 		args = append(args, memoryID)
 	}
+	// #nosec G201 -- table names are selected from a fixed enum and placeholders are generated internally.
 	query := fmt.Sprintf(`
 		SELECT memory_id, COUNT(*), SUM(CASE WHEN length(COALESCE(quote_hash, X'')) > 0 THEN 1 ELSE 0 END)
 		FROM %s
@@ -1627,8 +1643,9 @@ func (s *Service) loadTraceEdges(ctx context.Context, memorySpace string, fromMe
 		placeholders = append(placeholders, "?")
 		args = append(args, memoryID)
 	}
+	// #nosec G201 -- placeholders are generated internally for trace expansion.
 	query := fmt.Sprintf(`
-		SELECT e.relation_type, e.to_memory_id
+			SELECT e.relation_type, e.to_memory_id
 		FROM memory_edges e
 		LEFT JOIN local_graph_suspensions s
 		  ON s.entity_type = 'memory_edge'
@@ -1639,8 +1656,9 @@ func (s *Service) loadTraceEdges(ctx context.Context, memorySpace string, fromMe
 		ORDER BY e.authored_at_ms, e.edge_id
 	`, strings.Join(placeholders, ","))
 	if memorySpace == string(VisibilityPrivate) {
+		// #nosec G201 -- placeholders are generated internally for trace expansion.
 		query = fmt.Sprintf(`
-			SELECT relation_type, to_memory_id
+				SELECT relation_type, to_memory_id
 			FROM private_memory_edges
 			WHERE from_memory_id IN (%s)
 			ORDER BY authored_at_ms, edge_id

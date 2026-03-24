@@ -11,18 +11,18 @@ import (
 )
 
 type storeHTTPRequest struct {
-	MemoryID      string `json:"memory_id"`
-	Visibility    string `json:"visibility"`
-	Namespace     string `json:"namespace"`
-	MemoryType    string `json:"memory_type"`
-	Scope         string `json:"scope"`
-	Subject       string `json:"subject"`
-	Body          string `json:"body"`
-	SourceURI     string `json:"source_uri"`
-	SourceHash    string `json:"source_hash"`
-	AuthorAgentID string `json:"author_agent_id"`
-	OriginPeerID  string `json:"origin_peer_id"`
-	AuthoredAtMS  int64  `json:"authored_at_ms"`
+	MemoryID      string                `json:"memory_id"`
+	Visibility    string                `json:"visibility"`
+	Namespace     string                `json:"namespace"`
+	MemoryType    string                `json:"memory_type"`
+	Scope         string                `json:"scope"`
+	Subject       string                `json:"subject"`
+	Body          string                `json:"body"`
+	SourceURI     string                `json:"source_uri"`
+	SourceHash    string                `json:"source_hash"`
+	AuthorAgentID string                `json:"author_agent_id"`
+	OriginPeerID  string                `json:"origin_peer_id"`
+	AuthoredAtMS  int64                 `json:"authored_at_ms"`
 	Relations     []relationHTTPRequest `json:"relations"`
 }
 

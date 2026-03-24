@@ -351,6 +351,7 @@ func resolveClearedSuspensions(ctx context.Context, tx *sql.Tx, entityType strin
 			placeholders = append(placeholders, "?")
 			args = append(args, entityID)
 		}
+		// #nosec G202 -- placeholders are generated internally for a variable-length NOT IN clause.
 		query += fmt.Sprintf(" AND entity_id NOT IN (%s)", strings.Join(placeholders, ","))
 	}
 	result, err := tx.ExecContext(ctx, query, args...)

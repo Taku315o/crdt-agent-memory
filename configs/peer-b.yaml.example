@@ -3,9 +3,6 @@ database_path: "/tmp/crdt-agent-memory-dev/peer-b/agent_memory.sqlite"
 signing_key_path: "/tmp/crdt-agent-memory-dev/peer-b/peer.key"
 namespaces:
   - "team/dev"
-extensions:
-  crsqlite_path: "/Users/hizawatakuto/Documents/MyProject/crdt-agent-memory/.tools/crsqlite/crsqlite.dylib"
-  sqlite_vec_path: "/Users/hizawatakuto/Documents/MyProject/crdt-agent-memory/.tools/sqlite-vec/vec0.dylib"
 transport:
   discovery_profile: "http-dev"
   relay_profile: "none"

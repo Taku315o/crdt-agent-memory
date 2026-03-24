@@ -22,8 +22,8 @@ type Provider interface {
 
 var (
 	providerOnce sync.Once
-	defaultProv   Provider
-	defaultErr    error
+	defaultProv  Provider
+	defaultErr   error
 )
 
 func FromText(ctx context.Context, text string) ([]float64, error) {
@@ -166,9 +166,9 @@ func sqrt(v float64) float64 {
 }
 
 type openAIProvider struct {
-	apiKey    string
-	model     string
-	baseURL   string
+	apiKey     string
+	model      string
+	baseURL    string
 	httpClient *http.Client
 }
 
@@ -186,9 +186,9 @@ func newOpenAIProviderFromEnv() (Provider, error) {
 		baseURL = "https://api.openai.com/v1/embeddings"
 	}
 	return openAIProvider{
-		apiKey:    apiKey,
-		model:     model,
-		baseURL:   baseURL,
+		apiKey:     apiKey,
+		model:      model,
+		baseURL:    baseURL,
 		httpClient: http.DefaultClient,
 	}, nil
 }

@@ -51,6 +51,7 @@ func NewSignerFromSeed(seed []byte) (*Ed25519Signer, error) {
 }
 
 func LoadSigner(path string) (*Ed25519Signer, error) {
+	// #nosec G304 -- signer path is operator-controlled application config.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
