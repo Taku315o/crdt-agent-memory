@@ -5,6 +5,8 @@
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Tests](https://img.shields.io/badge/tests-passing-brightgreen)
 
+> ⚠️ **Architecture Under Review**: I'm currently reviewing the system architecture. While core functions remain stable, specifications are subject to change.
+
 A distributed, local-first long-term memory system for AI agents that automatically syncs across peers using CRDT and P2P networks.
 
 ## Overview
