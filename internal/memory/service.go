@@ -1421,8 +1421,31 @@ func (s *Service) loadExplainRecord(ctx context.Context, req ExplainRequest) (ex
 }
 
 func (s *Service) lookupLexicalBM25(ctx context.Context, req ExplainRequest) (float64, bool, error) {
+	ftsEnabled, err := s.memoryFTSEnabled(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	if ftsEnabled {
+		var lexicalBM25 float64
+		err := s.db.QueryRowContext(ctx, `
+			SELECT bm25(memory_fts_index)
+			FROM memory_fts_index
+			WHERE memory_fts_index MATCH ?
+			  AND memory_space = ?
+			  AND memory_id = ?
+			LIMIT 1
+		`, req.Query, req.MemorySpace, req.MemoryID).Scan(&lexicalBM25)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return 0, false, nil
+			}
+			return 0, false, err
+		}
+		return lexicalBM25, true, nil
+	}
+
 	var matched int
-	err := s.db.QueryRowContext(ctx, `
+	err = s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM memory_fts
 		WHERE (lower(subject) LIKE ? OR lower(body) LIKE ?)
@@ -1440,6 +1463,17 @@ func (s *Service) lookupLexicalBM25(ctx context.Context, req ExplainRequest) (fl
 		return 0, false, nil
 	}
 	return 1, true, nil
+}
+
+func (s *Service) memoryFTSEnabled(ctx context.Context) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_fts_index' LIMIT 1
+	`).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (s *Service) loadSignalSummary(ctx context.Context, memorySpace, memoryID string) (map[string]ExplainSignalSummary, error) {

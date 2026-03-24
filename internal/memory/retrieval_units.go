@@ -238,6 +238,55 @@ func appendInClause(query *strings.Builder, column string, values []string, args
 }
 
 func (s *Service) collectRetrievalFTSCandidates(ctx context.Context, req RecallRequest, limit int) ([]recallCandidate, error) {
+	ftsEnabled, err := s.retrievalFTSEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if ftsEnabled {
+		return s.collectRetrievalFTS5Candidates(ctx, req, limit)
+	}
+	return s.collectRetrievalLIKECandidates(ctx, req, limit)
+}
+
+func (s *Service) collectRetrievalFTS5Candidates(ctx context.Context, req RecallRequest, limit int) ([]recallCandidate, error) {
+	query := strings.Builder{}
+	query.WriteString(`
+		SELECT unit_id, bm25(retrieval_fts_index)
+		FROM retrieval_fts_index
+		WHERE retrieval_fts_index MATCH ?
+	`)
+	args := []any{req.Query}
+	args = appendInClause(&query, "memory_space", allowedMemorySpaces(req), args)
+	args = appendInClause(&query, "namespace", req.Namespaces, args)
+	args = appendInClause(&query, "source_type", req.SourceTypes, args)
+	args = appendInClause(&query, "unit_kind", req.UnitKinds, args)
+	query.WriteString(" ORDER BY bm25(retrieval_fts_index) LIMIT ?")
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, query.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []recallCandidate
+	rank := 0
+	for rows.Next() {
+		rank++
+		var unitID string
+		var bm25 float64
+		if err := rows.Scan(&unitID, &bm25); err != nil {
+			return nil, err
+		}
+		out = append(out, recallCandidate{
+			key:         recallKey{MemoryID: unitID},
+			lexicalRank: rank,
+			lexicalBM25: bm25,
+		})
+	}
+	return out, rows.Err()
+}
+
+func (s *Service) collectRetrievalLIKECandidates(ctx context.Context, req RecallRequest, limit int) ([]recallCandidate, error) {
 	query := strings.Builder{}
 	query.WriteString(`
 		SELECT unit_id
@@ -487,6 +536,17 @@ func (s *Service) retrievalVectorIndexEnabled(ctx context.Context) (bool, error)
 		return false, nil
 	}
 	return err == nil && version != "", err
+}
+
+func (s *Service) retrievalFTSEnabled(ctx context.Context) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_fts_index' LIMIT 1
+	`).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (s *Service) Promote(ctx context.Context, req PromoteRequest) (string, error) {
