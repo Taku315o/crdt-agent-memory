@@ -248,6 +248,14 @@ func appendInClause(query *strings.Builder, column string, values []string, args
 	return args
 }
 
+func ftsRecallQuery(query string) string {
+	terms := searchTerms(query)
+	if len(terms) == 0 {
+		return strings.TrimSpace(query)
+	}
+	return strings.Join(terms, " OR ")
+}
+
 func (s *Service) collectRetrievalFTSCandidates(ctx context.Context, req RecallRequest, limit int) ([]recallCandidate, error) {
 	ftsEnabled, err := s.retrievalFTSEnabled(ctx)
 	if err != nil {
@@ -260,13 +268,14 @@ func (s *Service) collectRetrievalFTSCandidates(ctx context.Context, req RecallR
 }
 
 func (s *Service) collectRetrievalFTS5Candidates(ctx context.Context, req RecallRequest, limit int) ([]recallCandidate, error) {
+	ftsQuery := ftsRecallQuery(req.Query)
 	query := strings.Builder{}
 	query.WriteString(`
 		SELECT unit_id, bm25(retrieval_fts_index)
 		FROM retrieval_fts_index
 		WHERE retrieval_fts_index MATCH ?
 	`)
-	args := []any{req.Query}
+	args := []any{ftsQuery}
 	args = appendInClause(&query, "memory_space", allowedMemorySpaces(req), args)
 	args = appendInClause(&query, "namespace", req.Namespaces, args)
 	args = appendInClause(&query, "source_type", req.SourceTypes, args)

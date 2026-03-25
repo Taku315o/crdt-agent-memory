@@ -1439,7 +1439,7 @@ func (s *Service) lookupLexicalBM25(ctx context.Context, req ExplainRequest) (fl
 			  AND memory_space = ?
 			  AND memory_id = ?
 			LIMIT 1
-		`, req.Query, req.MemorySpace, req.MemoryID).Scan(&lexicalBM25)
+		`, ftsRecallQuery(req.Query), req.MemorySpace, req.MemoryID).Scan(&lexicalBM25)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return 0, false, nil
