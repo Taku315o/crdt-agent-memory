@@ -23,14 +23,10 @@ func normalizeRecallRequest(req RecallRequest) RecallRequest {
 	req.Query = strings.TrimSpace(req.Query)
 	req.ProjectKey = strings.TrimSpace(req.ProjectKey)
 	req.BranchName = strings.TrimSpace(req.BranchName)
-	if !req.IncludePrivate && !req.IncludeTranscript {
-		req.IncludePrivate = true
-	}
-	if !req.IncludeShared {
-		req.IncludeShared = true
-	}
+	// Default to private + shared only when the caller did not opt into any space.
 	if !req.IncludePrivate && !req.IncludeShared && !req.IncludeTranscript {
-		req.IncludeTranscript = true
+		req.IncludePrivate = true
+		req.IncludeShared = true
 	}
 	return req
 }
