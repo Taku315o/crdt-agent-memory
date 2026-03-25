@@ -131,7 +131,11 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 		return Metadata{}, err
 	}
 	if ftsEnabled {
-		if err := ensureFTSIndexes(ctx, tx); err != nil {
+		rebuildFTS, err := shouldBackfillFTSIndexes(ctx, tx, appliedNewMigration)
+		if err != nil {
+			return Metadata{}, err
+		}
+		if err := ensureFTSIndexes(ctx, tx, rebuildFTS); err != nil {
 			return Metadata{}, err
 		}
 	}
@@ -212,7 +216,23 @@ func hasSQLiteVec(ctx context.Context, tx *sql.Tx) (bool, error) {
 	return version != "", nil
 }
 
-func ensureFTSIndexes(ctx context.Context, tx *sql.Tx) error {
+func shouldBackfillFTSIndexes(ctx context.Context, tx *sql.Tx, appliedNewMigration bool) (bool, error) {
+	if appliedNewMigration {
+		return true, nil
+	}
+	var existing int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'table'
+		  AND name IN ('memory_fts_index', 'retrieval_fts_index')
+	`).Scan(&existing); err != nil {
+		return false, err
+	}
+	return existing < 2, nil
+}
+
+func ensureFTSIndexes(ctx context.Context, tx *sql.Tx, rebuild bool) error {
 	statements := []string{
 		`CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts_index USING fts5(
 			memory_space UNINDEXED,
@@ -266,14 +286,23 @@ func ensureFTSIndexes(ctx context.Context, tx *sql.Tx) error {
 		BEGIN
 			DELETE FROM retrieval_fts_index WHERE unit_id = OLD.unit_id;
 		END;`,
+	}
+	for _, stmt := range statements {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	if !rebuild {
+		return nil
+	}
+	for _, stmt := range []string{
 		`DELETE FROM memory_fts_index`,
 		`INSERT INTO memory_fts_index(memory_space, memory_id, namespace, subject, body)
 		SELECT memory_space, memory_id, namespace, subject, body FROM memory_fts`,
 		`DELETE FROM retrieval_fts_index`,
 		`INSERT INTO retrieval_fts_index(unit_id, memory_space, namespace, source_type, unit_kind, title, body)
 		SELECT unit_id, memory_space, namespace, source_type, unit_kind, title, body FROM retrieval_fts`,
-	}
-	for _, stmt := range statements {
+	} {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
