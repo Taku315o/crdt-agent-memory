@@ -110,85 +110,98 @@ func TestToolDescriptionsExplainWorkflowBoundaries(t *testing.T) {
 	cases := []struct {
 		name          string
 		useCaseCue    string
-		boundaryCue   string
+		negativeCue   string
 		mutabilityCue string
+		toolRefs      []string
 	}{
 		{
 			name:          "memory.store",
 			useCaseCue:    "durable",
-			boundaryCue:   "Do not use this for search",
+			negativeCue:   "Do not use this for search",
 			mutabilityCue: "Create a new structured memory entry",
+			toolRefs:      []string{"memory.recall", "memory.promote", "memory.publish", "memory.supersede"},
 		},
 		{
 			name:          "memory.recall",
 			useCaseCue:    "Search existing transcript",
-			boundaryCue:   "Prefer context.build instead",
+			negativeCue:   "Prefer context.build instead",
 			mutabilityCue: "read-only",
+			toolRefs:      []string{"context.build"},
 		},
 		{
 			name:          "context.build",
 			useCaseCue:    "answer-ready context bundle",
-			boundaryCue:   "Prefer this over memory.recall",
+			negativeCue:   "Prefer this over memory.recall",
 			mutabilityCue: "do not use it to create or modify memory",
+			toolRefs:      []string{"memory.recall"},
 		},
 		{
 			name:          "memory.candidates.list",
 			useCaseCue:    "promotion candidates for review",
-			boundaryCue:   "use memory.promote for direct promotion",
+			negativeCue:   "does not create memory",
 			mutabilityCue: "read-only",
+			toolRefs:      []string{"memory.promote", "memory.candidates.approve", "memory.candidates.reject"},
 		},
 		{
 			name:          "memory.candidates.approve",
 			useCaseCue:    "pending promotion candidate",
-			boundaryCue:   "Do not use this for direct transcript promotion",
+			negativeCue:   "Do not use this for direct transcript promotion",
 			mutabilityCue: "materialize it as private structured memory",
+			toolRefs:      []string{"memory.promote", "memory.publish"},
 		},
 		{
 			name:          "memory.candidates.reject",
 			useCaseCue:    "pending promotion candidate",
-			boundaryCue:   "Use memory.candidates.approve instead",
+			negativeCue:   "does not alter existing memories",
 			mutabilityCue: "updates candidate review state",
+			toolRefs:      []string{"memory.candidates.approve"},
 		},
 		{
 			name:          "memory.promote",
 			useCaseCue:    "transcript chunks",
-			boundaryCue:   "use memory.store for direct creation",
+			negativeCue:   "Do not use this for direct memory authoring",
 			mutabilityCue: "private structured memory",
+			toolRefs:      []string{"memory.store", "memory.publish"},
 		},
 		{
 			name:          "memory.publish",
 			useCaseCue:    "private structured memory",
-			boundaryCue:   "Do not use it for first-time creation from scratch",
+			negativeCue:   "Do not use it for first-time creation from scratch",
 			mutabilityCue: "creates a shared copy",
+			toolRefs:      []string{"memory.store", "memory.promote"},
 		},
 		{
 			name:          "memory.supersede",
 			useCaseCue:    "history should remain traceable",
-			boundaryCue:   "Do not use this for brand-new memory",
+			negativeCue:   "Do not use this for brand-new memory",
 			mutabilityCue: "marking the prior one superseded",
+			toolRefs:      []string{"memory.store"},
 		},
 		{
 			name:          "memory.signal",
 			useCaseCue:    "review or trust signal",
-			boundaryCue:   "use memory.supersede for content revisions",
+			negativeCue:   "Do not use this to correct the claim itself",
 			mutabilityCue: "mutates signal state",
+			toolRefs:      []string{"memory.supersede"},
 		},
 		{
 			name:          "memory.explain",
 			useCaseCue:    "why a specific memory was retrieved",
-			boundaryCue:   "do not use it as a general search tool",
+			negativeCue:   "do not use it as a general search tool",
 			mutabilityCue: "read-only",
+			toolRefs:      []string{"memory.recall", "context.build", "memory.trace_decision"},
 		},
 		{
 			name:          "memory.trace_decision",
 			useCaseCue:    "support graph",
-			boundaryCue:   "do not use it for broad retrieval",
+			negativeCue:   "do not use it for broad retrieval",
 			mutabilityCue: "read-only",
+			toolRefs:      []string{"memory.explain"},
 		},
 		{
 			name:          "memory.sync_status",
 			useCaseCue:    "operational diagnostics",
-			boundaryCue:   "does not fetch memory content",
+			negativeCue:   "does not fetch memory content",
 			mutabilityCue: "read-only",
 		},
 	}
@@ -198,9 +211,14 @@ func TestToolDescriptionsExplainWorkflowBoundaries(t *testing.T) {
 		if description == "" {
 			t.Fatalf("missing description for %s", tc.name)
 		}
-		for _, want := range []string{tc.useCaseCue, tc.boundaryCue, tc.mutabilityCue} {
+		for _, want := range []string{tc.useCaseCue, tc.negativeCue, tc.mutabilityCue} {
 			if !strings.Contains(description, want) {
 				t.Fatalf("description for %s = %q, want substring %q", tc.name, description, want)
+			}
+		}
+		for _, toolRef := range tc.toolRefs {
+			if !strings.Contains(description, toolRef) {
+				t.Fatalf("description for %s = %q, want tool reference %q", tc.name, description, toolRef)
 			}
 		}
 	}
