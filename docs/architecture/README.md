@@ -1,136 +1,64 @@
-# CRDT-Agent-Memory Detailed Design Pack
+# CRDT-Agent-Memory Architecture Docs
 
-Status: Draft v0.3
-Date: 2026-03-10
-Scope: Detailed architecture pack derived from `../crdt-agent-memory-spec.md`
+Status: Current documentation portal
+Date: 2026-03-25
 
-## 1. Final Architecture Judgment
+このディレクトリは、OSS 公開向けのアーキテクチャ文書セットです。
+正本、現行実装ガイド、参考資料、archive を分けて管理します。
 
-MVP の推奨構成は次のとおり。
+## Canonical Docs
 
-- Language: Go
-- Canonical storage: SQLite
-- Shared-memory replication: cr-sqlite
-- Cursor authority for shared sync: `crsql_tracked_peers`
-- Supplemental peer metadata: local regular tables
-- P2P transport: Iroh
-- Lexical retrieval: FTS5
-- Semantic retrieval: sqlite-vec
-- Identity and signatures: Ed25519
-
-この構成で最も重要なのは、責務境界を厳密に切ることだ。
-
-| 責務 | 真実の置き場所 | 採用技術 | 明示的に使わない場所 |
-| --- | --- | --- | --- |
-| 保存 | 構造化メモリ本体 | SQLite | ベクトルを共有真実にしない |
-| 同期 | shared CRR tables の changeset | cr-sqlite + `crsql_tracked_peers` + Iroh | Iroh に競合解決をさせない |
-| 想起 | ローカル索引と再ランキング | FTS5 + sqlite-vec | sqlite-vec を共有同期しない |
-| 信頼 | peer identity、allowlist、署名、trust weight | Ed25519 + local policy tables | CRDT に信頼裁定を委ねない |
-
-## 2. High-Level System View
-
-```mermaid
-flowchart LR
-    Agent[Agent Runtime] --> API[Memory Service API]
-    API --> DB[(SQLite)]
-    API --> IndexQ[Index Queue]
-    Sync[Sync Daemon] --> DB
-    Sync --> Iroh[Iroh Transport]
-    IndexW[Index Worker] --> DB
-    IndexW --> VIDX[FTS5 / sqlite-vec]
-    Scrubber[Scrubber Worker] --> DB
-
-    subgraph SharedTables[Shared CRR Tables]
-        MN[memory_nodes]
-        ME[memory_edges]
-        MS[memory_signals]
-        AR[artifact_refs]
-        AS[artifact_spans]
-        TP[crsql_tracked_peers]
-    end
-
-    subgraph LocalTables[Local-only Regular Tables]
-        PMN[private_memory_nodes]
-        PME[private_memory_edges]
-        PMS[private_memory_signals]
-        PAR[private_artifact_refs]
-        PAS[private_artifact_spans]
-        EMB[memory_embeddings]
-        PSM[peer_sync_state]
-        PP[peer_policies]
-        SJ[sync_jobs]
-        RC[retrieval_cache]
-        PNV[private_notes]
-    end
-
-    DB --> MN
-    DB --> PMN
-```
-
-## 3. Core Design Rules
-
-- `cr-sqlite` は shared CRR tables のみに使う
-- private structured memory は shared CRR tables に混在させず、最初から local regular tables に分ける
-- shared sync の cursor は `crsql_tracked_peers` を正本にする
-- `peer_sync_state` は transport 補助メタデータだけを持つ
-- `Iroh` は encrypted stream transport のみに使う
-- `sqlite-vec` は local derived index のみに使う
-- semantic content の更新は overwrite ではなく `supersede` で表現する
-- `confidence` や `salience` は mutable scalar ではなく signal event として蓄積する
-- shared row の時刻は ordering truth ではなく advisory metadata として扱う
-- row signature は CRDT metadata ではなく app-level canonical payload のみを署名する
-
-## 4. Document Map
-
-- [technology-decisions.md](./technology-decisions.md)
-  - 技術選定、責務分離、一次情報ベースの比較
-- [transport-and-bootstrap.md](./transport-and-bootstrap.md)
-  - Iroh の bootstrap、discovery、relay、allowlist の既定運用
+- [crdt-agent-memory_transcript_memory_design.md](./crdt-agent-memory_transcript_memory_design.md)
+  - transcript / retrieval / promote / publish / candidate buffer の正本設計
 - [developer-setup-and-usage.md](./developer-setup-and-usage.md)
-  - 開発者向けセットアップ、ローカル起動、日常運用フロー
-- [agent-integration-and-distribution.md](./agent-integration-and-distribution.md)
-  - AI agent との接続方式、配布形態、利用パターン
-- [mcp-integration.md](./mcp-integration.md)
-  - MCP adapter の位置づけ、transport 方針、Claude Desktop / Cursor / Claude API 差分
-- [implementation-plan.md](./implementation-plan.md)
-  - 段階的な実装手順、PR 順序、各 Phase の完了条件
+  - 開発者向けセットアップと日常の操作手順
 - [project-progress.md](./project-progress.md)
-  - 現在の実装進捗、完了済み項目、未実装項目のサマリ
-- [mcp-tool-contract.md](./mcp-tool-contract.md)
-  - `memory-mcp` の tools、schema、errors、idempotency、fence 応答
-- [client-adapter-lifecycle.md](./client-adapter-lifecycle.md)
-  - 各 client adapter の install / update / remove / detect 振る舞い
-- [migration-and-compatibility.md](./migration-and-compatibility.md)
-  - schema migration、互換性判定、rolling upgrade 手順
-- [identity-time-and-signatures.md](./identity-time-and-signatures.md)
-  - peer identity、agent identity、時刻、署名、canonical payload
-- [workflows.md](./workflows.md)
-  - 保存、同期、想起、訂正、障害時再試行の流れ
+  - 2026-03-25 時点の現行実装スナップショット
+- [implementation-plan.md](./implementation-plan.md)
+  - 現在の残タスクと実装優先順位
+
+## Current Reference Docs
+
+- [package-internals.md](./package-internals.md)
+  - `internal/storage`, `internal/memory`, `internal/memsync`, `internal/policy` の現行要約
 - [data-model-erd.md](./data-model-erd.md)
-  - ERD、shared/private 分離、関係、モデリング原則
+  - データモデル全体像
+- [workflows.md](./workflows.md)
+  - store / recall / promote / publish / sync の流れ
+- [mcp-tool-contract.md](./mcp-tool-contract.md)
+  - MCP tool surface
+- [identity-time-and-signatures.md](./identity-time-and-signatures.md)
+  - identity / time / signature の扱い
+- [migration-and-compatibility.md](./migration-and-compatibility.md)
+  - migration / compatibility / schema fencing
 - [non-functional-requirements.md](./non-functional-requirements.md)
-  - 性能、可用性、セキュリティ、運用要件
+  - 性能・運用・安全性要件
 - [testing-strategy.md](./testing-strategy.md)
-  - テストレイヤ、環境、CI、故障注入
-- [tdd-workflow.md](./tdd-workflow.md)
-  - 実装順序、Red-Green-Refactor の切り方
+  - テスト戦略
+- [technology-decisions.md](./technology-decisions.md)
+  - 技術選定メモ
+- [transport-and-bootstrap.md](./transport-and-bootstrap.md)
+  - transport と bootstrap の方針
 
-## 5. Verified Primary Sources Snapshot
+## Historical / Concept Docs
 
-2026-03-10 時点で設計判断に使った一次情報。
+- [../crdt-agent-memory-spec.md](../crdt-agent-memory-spec.md)
+  - 初期の概念仕様。現行実装との差分があるため、正本としては扱わない
+- [legacy/README.md](./legacy/README.md)
+  - 古い package-level note と廃止前の設計メモ
 
-- `cr-sqlite` quickstart: https://vlcn.io/docs/cr-sqlite/quickstart
-- `cr-sqlite` constraints: https://www.vlcn.io/docs/cr-sqlite/constraints
-- `cr-sqlite` whole CRR sync: https://www.vlcn.io/docs/cr-sqlite/networking/whole-crr-sync
-- `cr-sqlite` transactions: https://vlcn.io/docs/cr-sqlite/transactions
-- `cr-sqlite` schema alterations: https://vlcn.io/docs/cr-sqlite/advanced/migrations
-- `Iroh` overview: https://www.iroh.computer/docs/overview
-- `Iroh` endpoint identifiers: https://docs.iroh.computer/concepts/identifiers
-- `Iroh` tickets: https://docs.iroh.computer/concepts/tickets
-- `Iroh` relays: https://docs.iroh.computer/concepts/relays
-- `Iroh` local discovery: https://www.iroh.computer/docs/concepts/local_discovery
-- `Iroh` endpoint builder / discovery defaults: https://docs.rs/iroh/latest/iroh/endpoint/struct.Builder.html
-- `sqlite-vec`: https://github.com/asg017/sqlite-vec
-- `PowerSync` sync-postgres: https://www.powersync.com/sync-postgres
-- `Ditto` about: https://docs.ditto.live/home/about-ditto
-- `SQLite Sync`: https://github.com/sqliteai/sqlite-sync
+## Reading Order
+
+初めて読む場合は以下の順を推奨します。
+
+1. [crdt-agent-memory_transcript_memory_design.md](./crdt-agent-memory_transcript_memory_design.md)
+2. [project-progress.md](./project-progress.md)
+3. [developer-setup-and-usage.md](./developer-setup-and-usage.md)
+4. [package-internals.md](./package-internals.md)
+
+## Documentation Policy
+
+- 正本は明示的に 1 つに寄せる
+- 実装スナップショットは `project-progress.md` に集約する
+- package-level の古い説明文書は更新されない限り archive に移す
+- 内部作業由来の断片や会話引用トークンは公開文書に残さない
