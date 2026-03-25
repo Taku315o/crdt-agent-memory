@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -95,6 +99,143 @@ func TestToolsListIncludesStoreAndRecall(t *testing.T) {
 		if !strings.Contains(string(raw), name) {
 			t.Fatalf("tool list missing %s", name)
 		}
+	}
+}
+
+func TestInitializeAdvertisesResourcesAndPrompts(t *testing.T) {
+	resp := handle(config.Config{}, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "initialize",
+		Params: mustJSON(t, map[string]any{
+			"protocolVersion": "2025-06-18",
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %#v", resp.Error)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", resp.Result)
+	}
+	caps, ok := result["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilities type = %T, want map[string]any", result["capabilities"])
+	}
+	if _, ok := caps["tools"]; !ok {
+		t.Fatal("capabilities missing tools")
+	}
+	if _, ok := caps["resources"]; !ok {
+		t.Fatal("capabilities missing resources")
+	}
+	if _, ok := caps["prompts"]; !ok {
+		t.Fatal("capabilities missing prompts")
+	}
+}
+
+func TestInitializeNegotiatesSupportedProtocolVersion(t *testing.T) {
+	resp := handle(config.Config{}, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "initialize",
+		Params: mustJSON(t, map[string]any{
+			"protocolVersion": "2025-06-18",
+			"clientInfo": map[string]any{
+				"name":    "inspector",
+				"version": "1.0.0",
+			},
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %#v", resp.Error)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", resp.Result)
+	}
+	if result["protocolVersion"] != "2025-06-18" {
+		t.Fatalf("protocolVersion = %v, want 2025-06-18", result["protocolVersion"])
+	}
+}
+
+func TestInitializeFallsBackToDefaultProtocolVersion(t *testing.T) {
+	resp := handle(config.Config{}, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "initialize",
+		Params: mustJSON(t, map[string]any{
+			"protocolVersion": "2026-01-01",
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %#v", resp.Error)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", resp.Result)
+	}
+	if result["protocolVersion"] != defaultMCPProtocolVersion {
+		t.Fatalf("protocolVersion = %v, want %s", result["protocolVersion"], defaultMCPProtocolVersion)
+	}
+}
+
+func TestEmptyResourcesAndPromptsList(t *testing.T) {
+	for _, method := range []string{"resources/list", "resources/templates/list", "prompts/list"} {
+		resp := handle(config.Config{}, rpcRequest{JSONRPC: "2.0", ID: 1, Method: method})
+		if resp.Error != nil {
+			t.Fatalf("%s returned error: %#v", method, resp.Error)
+		}
+	}
+}
+
+func TestReadMessageSupportsJSONLines(t *testing.T) {
+	r := bufio.NewReader(strings.NewReader(`{"jsonrpc":"2.0","method":"ping"}` + "\n"))
+	body, err := readMessage(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != `{"jsonrpc":"2.0","method":"ping"}` {
+		t.Fatalf("body = %q", string(body))
+	}
+}
+
+func TestReadMessageSupportsContentLengthFraming(t *testing.T) {
+	msg := `{"jsonrpc":"2.0","method":"ping"}`
+	input := "Content-Length: " + strconv.Itoa(len(msg)) + "\r\n\r\n" + msg
+	r := bufio.NewReader(strings.NewReader(input))
+	body, err := readMessage(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != msg {
+		t.Fatalf("body = %q", string(body))
+	}
+}
+
+func TestWriteMessageUsesJSONLineFraming(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() {
+		os.Stdout = oldStdout
+	}()
+
+	writeMessage(rpcResponse{JSONRPC: "2.0", ID: 1, Result: map[string]any{"ok": true}})
+	_ = w.Close()
+
+	var out bytes.Buffer
+	if _, err := out.ReadFrom(r); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	if strings.Contains(s, "Content-Length:") {
+		t.Fatalf("unexpected content-length framing: %q", s)
+	}
+	if !strings.HasSuffix(s, "\n") {
+		t.Fatalf("expected trailing newline, got %q", s)
 	}
 }
 

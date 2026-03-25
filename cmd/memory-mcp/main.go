@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -186,7 +187,22 @@ type relationToolRequest struct {
 
 var apiClient = &http.Client{Timeout: 10 * time.Second}
 
+const defaultMCPProtocolVersion = "2025-06-18"
+
+var supportedMCPProtocolVersions = map[string]struct{}{
+	"2024-11-05": {},
+	"2025-03-26": {},
+	"2025-06-18": {},
+}
+
+type initializeParams struct {
+	ProtocolVersion string         `json:"protocolVersion"`
+	Capabilities    map[string]any `json:"capabilities"`
+	ClientInfo      map[string]any `json:"clientInfo"`
+}
+
 func main() {
+	initDebugLogging()
 	var configPath string
 	flag.StringVar(&configPath, "config", "", "path to config yaml")
 	flag.Parse()
@@ -197,11 +213,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Printf("config loaded peer_id=%s api=%s sync=%s", cfg.PeerID, cfg.API.ListenAddr, cfg.Sync.ListenAddr)
 	reader := bufio.NewReader(os.Stdin)
+	log.Printf("entering stdio read loop")
 	for {
 		req, err := readMessage(reader)
 		if err != nil {
 			if err == io.EOF {
+				log.Printf("stdin closed")
 				return
 			}
 			log.Fatal(err)
@@ -218,22 +237,81 @@ func main() {
 	}
 }
 
+func initDebugLogging() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	logDir := "/tmp/crdt-agent-memory-mcp"
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		log.SetOutput(io.Discard)
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(logDir, "memory-mcp.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		log.SetOutput(io.Discard)
+		return
+	}
+	log.SetOutput(f)
+	log.Printf("memory-mcp boot pid=%d", os.Getpid())
+}
+
 func handle(cfg config.Config, req rpcRequest) rpcResponse {
 	resp := rpcResponse{JSONRPC: "2.0", ID: req.ID}
+	log.Printf("rpc method=%s", req.Method)
 	switch req.Method {
 	case "initialize":
+		var params initializeParams
+		if len(req.Params) > 0 {
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				resp.Error = map[string]any{"code": -32602, "message": err.Error()}
+				return resp
+			}
+		}
+		protocolVersion := negotiateProtocolVersion(params.ProtocolVersion)
+		if requested := strings.TrimSpace(params.ProtocolVersion); requested != "" && requested != protocolVersion {
+			log.Printf("initialize requested unsupported protocolVersion=%q, using %q", requested, protocolVersion)
+		}
 		resp.Result = map[string]any{
-			"protocolVersion": "2024-11-05",
+			"protocolVersion": protocolVersion,
 			"serverInfo": map[string]any{
 				"name":    "memory-mcp",
 				"version": "0.1.0",
 			},
 			"capabilities": map[string]any{
-				"tools": map[string]any{},
+				"tools":     map[string]any{},
+				"resources": map[string]any{},
+				"prompts":   map[string]any{},
 			},
 		}
 	case "notifications/initialized":
 		return rpcResponse{}
+	case "ping":
+		resp.Result = map[string]any{}
+	case "roots/list":
+		resp.Result = map[string]any{
+			"roots": []any{},
+		}
+	case "notifications/roots/list_changed":
+		return rpcResponse{}
+	case "resources/list":
+		resp.Result = map[string]any{
+			"resources": []any{},
+		}
+	case "resources/templates/list":
+		resp.Result = map[string]any{
+			"resourceTemplates": []any{},
+		}
+	case "resources/read":
+		resp.Error = map[string]any{"code": -32601, "message": "method not found"}
+	case "resources/subscribe":
+		resp.Result = map[string]any{}
+	case "resources/unsubscribe":
+		resp.Result = map[string]any{}
+	case "prompts/list":
+		resp.Result = map[string]any{
+			"prompts": []any{},
+		}
+	case "prompts/get":
+		resp.Error = map[string]any{"code": -32601, "message": "method not found"}
 	case "tools/list":
 		resp.Result = map[string]any{
 			"tools": toolDefinitions(),
@@ -254,6 +332,17 @@ func handle(cfg config.Config, req rpcRequest) rpcResponse {
 		resp.Error = map[string]any{"code": -32601, "message": "method not found"}
 	}
 	return resp
+}
+
+func negotiateProtocolVersion(requested string) string {
+	version := strings.TrimSpace(requested)
+	if version == "" {
+		return defaultMCPProtocolVersion
+	}
+	if _, ok := supportedMCPProtocolVersions[version]; ok {
+		return version
+	}
+	return defaultMCPProtocolVersion
 }
 
 func toolDefinitions() []map[string]any {
@@ -866,7 +955,6 @@ func rpcErrorFromEnvelope(payload apiEnvelope, err error) map[string]any {
 }
 
 func readMessage(r *bufio.Reader) ([]byte, error) {
-	length := 0
 	for {
 		line, err := r.ReadString('\n')
 		if err != nil {
@@ -874,29 +962,46 @@ func readMessage(r *bufio.Reader) ([]byte, error) {
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
-			break
+			continue
 		}
-		if strings.HasPrefix(strings.ToLower(line), "content-length:") {
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) != 2 {
-				return nil, fmt.Errorf("malformed content-length header")
-			}
-			value := strings.TrimSpace(parts[1])
-			n, err := strconv.Atoi(value)
+		if !strings.HasPrefix(strings.ToLower(line), "content-length:") {
+			return []byte(line), nil
+		}
+
+		length := 0
+		value, err := parseContentLength(line)
+		if err != nil {
+			return nil, err
+		}
+		length = value
+
+		for {
+			headerLine, err := r.ReadString('\n')
 			if err != nil {
 				return nil, err
 			}
-			length = n
+			headerLine = strings.TrimRight(headerLine, "\r\n")
+			if headerLine == "" {
+				break
+			}
+			if strings.HasPrefix(strings.ToLower(headerLine), "content-length:") {
+				value, err := parseContentLength(headerLine)
+				if err != nil {
+					return nil, err
+				}
+				length = value
+			}
 		}
+
+		if length <= 0 {
+			return nil, io.EOF
+		}
+		body := make([]byte, length)
+		if _, err := io.ReadFull(r, body); err != nil {
+			return nil, err
+		}
+		return body, nil
 	}
-	if length <= 0 {
-		return nil, io.EOF
-	}
-	body := make([]byte, length)
-	if _, err := io.ReadFull(r, body); err != nil {
-		return nil, err
-	}
-	return body, nil
 }
 
 func writeMessage(resp rpcResponse) {
@@ -907,8 +1012,18 @@ func writeMessage(resp rpcResponse) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	var buf bytes.Buffer
-	_, _ = fmt.Fprintf(&buf, "Content-Length: %d\r\n\r\n", len(raw))
-	_, _ = buf.Write(raw)
-	_, _ = os.Stdout.Write(buf.Bytes())
+	_, _ = os.Stdout.Write(append(raw, '\n'))
+}
+
+func parseContentLength(line string) (int, error) {
+	parts := strings.SplitN(line, ":", 2)
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("malformed content-length header")
+	}
+	value := strings.TrimSpace(parts[1])
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
