@@ -138,8 +138,18 @@ func (s *Service) ApproveCandidate(ctx context.Context, req ApproveCandidateRequ
 	if err != nil {
 		return "", err
 	}
+	if err := markCandidateApprovedTx(ctx, tx, req.CandidateID, memoryID); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return memoryID, nil
+}
+
+func markCandidateApprovedTx(ctx context.Context, tx *sql.Tx, candidateID, memoryID string) error {
 	now := time.Now().UnixMilli()
-	if _, err := tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		UPDATE memory_candidates
 		SET status = 'approved',
 			approved_memory_id = ?,
@@ -147,13 +157,19 @@ func (s *Service) ApproveCandidate(ctx context.Context, req ApproveCandidateRequ
 			updated_at_ms = ?,
 			review_note = ''
 		WHERE candidate_id = ?
-	`, memoryID, now, now, req.CandidateID); err != nil {
-		return "", err
+		  AND status = 'pending'
+	`, memoryID, now, now, candidateID)
+	if err != nil {
+		return err
 	}
-	if err := tx.Commit(); err != nil {
-		return "", err
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
 	}
-	return memoryID, nil
+	if affected == 0 {
+		return ErrCandidateNotPending
+	}
+	return nil
 }
 
 func (s *Service) RejectCandidate(ctx context.Context, req RejectCandidateRequest) error {

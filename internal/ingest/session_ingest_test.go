@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"crdt-agent-memory/internal/storage"
 	"crdt-agent-memory/internal/testenv"
@@ -165,5 +166,67 @@ func TestIngestSessionKeepsOlderChunkVersionsImmutable(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("chunk_count = %d, want 2", count)
+	}
+}
+
+func TestUpsertPromotionCandidateRefreshesOriginPeerIDOnConflict(t *testing.T) {
+	ctx := context.Background()
+	db, _ := newFixture(t)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+
+	chunk := Chunk{
+		ChunkID:      "session-candidate:v2:2",
+		ChunkKind:    "decision",
+		Text:         "decision: keep origin peer fresh",
+		AuthoredAtMS: 123,
+		Sensitivity:  "private",
+	}
+	candidateID := "cand_" + digest(chunk.ChunkID)
+	now := time.Now().UnixMilli()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO memory_candidates(
+			candidate_id, namespace, candidate_type, status, subject, body, source_uri,
+			authored_at_ms, created_at_ms, updated_at_ms, author_agent_id, origin_peer_id,
+			sensitivity, retention_class, project_key, branch_name, metadata_json
+		) VALUES(?, 'crdt-agent-memory', 'decision', 'pending', 'old subject', 'old body', '',
+			?, ?, ?, 'agent/old', 'peer/old', 'private', 'default', '', '', '{}')
+	`, candidateID, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := upsertPromotionCandidate(ctx, tx, SessionIngestRequest{
+		Namespace:      "crdt-agent-memory",
+		RetentionClass: "default",
+	}, chunk); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var originPeerID, authorAgentID, subject, body string
+	if err := db.QueryRowContext(ctx, `
+		SELECT origin_peer_id, author_agent_id, subject, body
+		FROM memory_candidates
+		WHERE candidate_id = ?
+	`, candidateID).Scan(&originPeerID, &authorAgentID, &subject, &body); err != nil {
+		t.Fatal(err)
+	}
+	if originPeerID != "peer/local" {
+		t.Fatalf("origin_peer_id = %q, want peer/local", originPeerID)
+	}
+	if authorAgentID != "agent/ingest" {
+		t.Fatalf("author_agent_id = %q, want agent/ingest", authorAgentID)
+	}
+	if subject != "keep origin peer fresh" {
+		t.Fatalf("subject = %q, want updated subject", subject)
+	}
+	if body != chunk.Text {
+		t.Fatalf("body = %q, want updated body", body)
 	}
 }
