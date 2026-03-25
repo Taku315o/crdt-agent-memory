@@ -223,7 +223,7 @@ func TestUpsertPromotionCandidateRefreshesOriginPeerIDOnConflict(t *testing.T) {
 	if authorAgentID != "agent/ingest" {
 		t.Fatalf("author_agent_id = %q, want agent/ingest", authorAgentID)
 	}
-	if subject != "decision: keep origin peer fresh" {
+	if subject != "keep origin peer fresh" {
 		t.Fatalf("subject = %q, want updated subject", subject)
 	}
 	if body != chunk.Text {

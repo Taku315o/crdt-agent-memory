@@ -147,6 +147,7 @@ func TestRecallUnionView(t *testing.T) {
 	results, err := svc.Recall(ctx, RecallRequest{
 		Query:          "release checklist recall body",
 		IncludePrivate: true,
+		IncludeShared:  true,
 		Limit:          10,
 	})
 	if err != nil {
@@ -205,6 +206,7 @@ func TestRecallUsesVectorIndexWhenAvailable(t *testing.T) {
 	results, err := fixture.svc.Recall(ctx, RecallRequest{
 		Query:          "vector recall candidate",
 		IncludePrivate: true,
+		IncludeShared:  true,
 		Limit:          10,
 	})
 	if err != nil {

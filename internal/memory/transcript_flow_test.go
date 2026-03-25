@@ -50,6 +50,7 @@ func TestPromoteAndPublishFromTranscript(t *testing.T) {
 	results, err := fixture.svc.Recall(ctx, RecallRequest{
 		Query:             "retrieval_units",
 		IncludePrivate:    true,
+		IncludeShared:     true,
 		IncludeTranscript: true,
 	})
 	if err != nil {
