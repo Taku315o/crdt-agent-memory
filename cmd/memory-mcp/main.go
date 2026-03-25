@@ -260,12 +260,12 @@ func toolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "memory.store",
-			"description": "append a local memory via memoryd HTTP",
+			"description": "Create a new structured memory entry. Use this when the agent has a durable fact, decision, task, or observation worth preserving directly as private or shared memory. Do not use this for search, transcript-to-memory promotion, publishing private memory to shared memory, or revising an existing memory; use memory.recall, memory.promote, memory.publish, or memory.supersede for those cases.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"memory_id":       map[string]any{"type": "string"},
-					"visibility":      map[string]any{"type": "string"},
+					"visibility":      map[string]any{"type": "string", "enum": []string{"private", "shared"}},
 					"namespace":       map[string]any{"type": "string"},
 					"memory_type":     map[string]any{"type": "string"},
 					"scope":           map[string]any{"type": "string"},
@@ -299,7 +299,7 @@ func toolDefinitions() []map[string]any {
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"relation_type": map[string]any{"type": "string"},
+								"relation_type": map[string]any{"type": "string", "enum": []string{"supports", "contradicts", "derived_from", "about", "caused_by", "references"}},
 								"to_memory_id":  map[string]any{"type": "string"},
 								"weight":        map[string]any{"type": "number"},
 							},
@@ -312,7 +312,7 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "memory.recall",
-			"description": "query local memory via memoryd HTTP",
+			"description": "Search existing transcript, private memory, and shared memory for relevant prior knowledge. Use this before answering or acting when you need to retrieve what is already known. This is read-only and does not create, publish, or update memory. Prefer context.build instead when you need a packed answer-ready bundle rather than raw ranked hits.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -325,8 +325,8 @@ func toolDefinitions() []map[string]any {
 					"include_transcript": map[string]any{"type": "boolean"},
 					"project_key":        map[string]any{"type": "string"},
 					"branch_name":        map[string]any{"type": "string"},
-					"unit_kinds":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					"source_types":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"unit_kinds":         map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"decision", "rationale", "qa_pair", "fact", "task", "note"}}},
+					"source_types":       map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"transcript_chunk", "private_memory", "shared_memory"}}},
 					"limit":              map[string]any{"type": "integer"},
 				},
 				"required": []string{"query"},
@@ -334,7 +334,7 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "context.build",
-			"description": "build a role-organized context bundle from transcript and memory",
+			"description": "Build an answer-ready context bundle from transcript, private memory, and shared memory. Use this when the agent is about to respond, reason, or plan and wants organized sections such as active private decisions, shared constraints, and recent discussions. Prefer this over memory.recall when raw search hits would need extra packing; do not use it to create or modify memory.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -350,12 +350,12 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "memory.candidates.list",
-			"description": "list pending or reviewed promotion candidates",
+			"description": "List transcript-derived promotion candidates for review. Use this when promotion is review-driven and you want to inspect pending, approved, or rejected candidates before deciding what to materialize. This is read-only and does not create memory; use memory.promote for direct promotion from chosen chunk IDs, memory.candidates.approve to materialize a candidate, and memory.candidates.reject to dismiss one.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"namespace":   map[string]any{"type": "string"},
-					"status":      map[string]any{"type": "string"},
+					"status":      map[string]any{"type": "string", "enum": []string{"pending", "approved", "rejected"}},
 					"project_key": map[string]any{"type": "string"},
 					"branch_name": map[string]any{"type": "string"},
 					"limit":       map[string]any{"type": "integer"},
@@ -364,7 +364,7 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "memory.candidates.approve",
-			"description": "approve a promotion candidate and materialize private memory",
+			"description": "Approve a pending promotion candidate and materialize it as private structured memory. Use this when a candidate already exists in the review queue and should become durable private memory. Do not use this for direct transcript promotion without a candidate or for sharing to peers; use memory.promote for direct chunk-based promotion and memory.publish after review if the resulting private memory should become shared.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -382,7 +382,7 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "memory.candidates.reject",
-			"description": "reject a promotion candidate without creating memory",
+			"description": "Reject a pending promotion candidate without creating memory. Use this when a transcript-derived candidate should not become durable memory. This only updates candidate review state and does not alter existing memories. Use memory.candidates.approve instead if the candidate should materialize as private memory.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -394,12 +394,12 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "memory.promote",
-			"description": "promote transcript chunks into a private structured memory",
+			"description": "Promote transcript chunks into a new private structured memory with provenance. Use this when useful knowledge currently lives in transcript history and should become durable private memory. Do not use this for direct memory authoring or for sharing to peers; use memory.store for direct creation and memory.publish to move vetted private memory into shared memory.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"chunk_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					"memory_type":     map[string]any{"type": "string"},
+					"memory_type":     map[string]any{"type": "string", "description": "Optional label for the promoted memory such as decision, rationale, task, note, or fact. Defaults to note when omitted."},
 					"subject":         map[string]any{"type": "string"},
 					"namespace":       map[string]any{"type": "string"},
 					"author_agent_id": map[string]any{"type": "string"},
@@ -412,19 +412,19 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "memory.publish",
-			"description": "publish a private structured memory into shared memory",
+			"description": "Publish an existing private structured memory as shared memory. Use this after a private memory has been reviewed or deemed worth sharing with other peers. This preserves the private original and creates a shared copy, optionally with redaction. Do not use it for first-time creation from scratch or transcript promotion; use memory.store or memory.promote for those cases.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"private_memory_id": map[string]any{"type": "string"},
-					"redaction_policy":  map[string]any{"type": "string"},
+					"redaction_policy":  map[string]any{"type": "string", "enum": []string{"default", "strict"}},
 				},
 				"required": []string{"private_memory_id"},
 			},
 		},
 		{
 			"name":        "memory.supersede",
-			"description": "supersede a shared memory via memoryd HTTP",
+			"description": "Revise an existing shared memory by creating a replacement and linking it as superseding the older claim. Use this when a shared memory is outdated, corrected, or refined and history should remain traceable. Do not use this for brand-new memory or private memory updates; use memory.store for new entries. This mutates shared memory state by adding a new claim and marking the prior one superseded.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -432,7 +432,7 @@ func toolDefinitions() []map[string]any {
 					"old_memory_ref": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"memory_space": map[string]any{"type": "string"},
+							"memory_space": map[string]any{"type": "string", "enum": []string{"shared"}},
 							"memory_id":    map[string]any{"type": "string"},
 						},
 					},
@@ -440,7 +440,7 @@ func toolDefinitions() []map[string]any {
 						"type": "object",
 						"properties": map[string]any{
 							"memory_id":       map[string]any{"type": "string"},
-							"visibility":      map[string]any{"type": "string"},
+							"visibility":      map[string]any{"type": "string", "enum": []string{"shared"}},
 							"namespace":       map[string]any{"type": "string"},
 							"memory_type":     map[string]any{"type": "string"},
 							"scope":           map[string]any{"type": "string"},
@@ -460,19 +460,19 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "memory.signal",
-			"description": "append a signal to a shared or private memory via memoryd HTTP",
+			"description": "Attach a lightweight review or trust signal to an existing private or shared memory. Use this for reinforcement, deprecation, confirmation, denial, pinning, or bookmarking when you want to influence ranking or downstream interpretation without rewriting the memory body. Do not use this to correct the claim itself; use memory.supersede for content revisions. This mutates signal state but leaves the original memory text unchanged.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"memory_ref": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"memory_space": map[string]any{"type": "string"},
+							"memory_space": map[string]any{"type": "string", "enum": []string{"private", "shared"}},
 							"memory_id":    map[string]any{"type": "string"},
 						},
 						"required": []string{"memory_space", "memory_id"},
 					},
-					"signal_type":     map[string]any{"type": "string"},
+					"signal_type":     map[string]any{"type": "string", "enum": []string{"reinforce", "deprecate", "confirm", "deny", "pin", "bookmark"}},
 					"value":           map[string]any{"type": "number"},
 					"reason":          map[string]any{"type": "string"},
 					"author_agent_id": map[string]any{"type": "string"},
@@ -484,14 +484,14 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "memory.explain",
-			"description": "explain why a memory matches a query and how trust affects it",
+			"description": "Explain why a specific memory was retrieved or considered relevant for a query. Use this after memory.recall, context.build, or manual inspection when you want ranking, provenance, and trust diagnostics for one memory. This is read-only and diagnostic; do not use it as a general search tool, and prefer memory.trace_decision when you need graph neighbors and artifact lineage rather than retrieval scoring.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"memory_ref": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"memory_space": map[string]any{"type": "string"},
+							"memory_space": map[string]any{"type": "string", "enum": []string{"private", "shared"}},
 							"memory_id":    map[string]any{"type": "string"},
 						},
 						"required": []string{"memory_space", "memory_id"},
@@ -503,14 +503,14 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "memory.trace_decision",
-			"description": "trace supporting and contradicting memories plus linked artifacts",
+			"description": "Trace the support graph, contradictions, artifacts, and transcript provenance around a specific decision memory. Use this when you need to inspect why a decision is connected to other memories or source material. This is read-only and graph-oriented; do not use it for broad retrieval, and prefer memory.explain when you need scoring and trust diagnostics for a single retrieved item.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"memory_ref": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"memory_space": map[string]any{"type": "string"},
+							"memory_space": map[string]any{"type": "string", "enum": []string{"private", "shared"}},
 							"memory_id":    map[string]any{"type": "string"},
 						},
 						"required": []string{"memory_space", "memory_id"},
@@ -522,7 +522,7 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "memory.sync_status",
-			"description": "return local sync health without mutating state",
+			"description": "Return local shared-memory sync health for a namespace. Use this for operational diagnostics when a caller needs to know whether peer replication is healthy, degraded, or schema-fenced. This is read-only and does not fetch memory content or repair anything.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

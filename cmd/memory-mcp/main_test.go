@@ -98,6 +98,114 @@ func TestToolsListIncludesStoreAndRecall(t *testing.T) {
 	}
 }
 
+func TestToolDescriptionsExplainWorkflowBoundaries(t *testing.T) {
+	tools := toolDefinitions()
+	descriptions := map[string]string{}
+	for _, tool := range tools {
+		name, _ := tool["name"].(string)
+		description, _ := tool["description"].(string)
+		descriptions[name] = description
+	}
+
+	cases := []struct {
+		name          string
+		useCaseCue    string
+		boundaryCue   string
+		mutabilityCue string
+	}{
+		{
+			name:          "memory.store",
+			useCaseCue:    "durable",
+			boundaryCue:   "Do not use this for search",
+			mutabilityCue: "Create a new structured memory entry",
+		},
+		{
+			name:          "memory.recall",
+			useCaseCue:    "Search existing transcript",
+			boundaryCue:   "Prefer context.build instead",
+			mutabilityCue: "read-only",
+		},
+		{
+			name:          "context.build",
+			useCaseCue:    "answer-ready context bundle",
+			boundaryCue:   "Prefer this over memory.recall",
+			mutabilityCue: "do not use it to create or modify memory",
+		},
+		{
+			name:          "memory.candidates.list",
+			useCaseCue:    "promotion candidates for review",
+			boundaryCue:   "use memory.promote for direct promotion",
+			mutabilityCue: "read-only",
+		},
+		{
+			name:          "memory.candidates.approve",
+			useCaseCue:    "pending promotion candidate",
+			boundaryCue:   "Do not use this for direct transcript promotion",
+			mutabilityCue: "materialize it as private structured memory",
+		},
+		{
+			name:          "memory.candidates.reject",
+			useCaseCue:    "pending promotion candidate",
+			boundaryCue:   "Use memory.candidates.approve instead",
+			mutabilityCue: "updates candidate review state",
+		},
+		{
+			name:          "memory.promote",
+			useCaseCue:    "transcript chunks",
+			boundaryCue:   "use memory.store for direct creation",
+			mutabilityCue: "private structured memory",
+		},
+		{
+			name:          "memory.publish",
+			useCaseCue:    "private structured memory",
+			boundaryCue:   "Do not use it for first-time creation from scratch",
+			mutabilityCue: "creates a shared copy",
+		},
+		{
+			name:          "memory.supersede",
+			useCaseCue:    "history should remain traceable",
+			boundaryCue:   "Do not use this for brand-new memory",
+			mutabilityCue: "marking the prior one superseded",
+		},
+		{
+			name:          "memory.signal",
+			useCaseCue:    "review or trust signal",
+			boundaryCue:   "use memory.supersede for content revisions",
+			mutabilityCue: "mutates signal state",
+		},
+		{
+			name:          "memory.explain",
+			useCaseCue:    "why a specific memory was retrieved",
+			boundaryCue:   "do not use it as a general search tool",
+			mutabilityCue: "read-only",
+		},
+		{
+			name:          "memory.trace_decision",
+			useCaseCue:    "support graph",
+			boundaryCue:   "do not use it for broad retrieval",
+			mutabilityCue: "read-only",
+		},
+		{
+			name:          "memory.sync_status",
+			useCaseCue:    "operational diagnostics",
+			boundaryCue:   "does not fetch memory content",
+			mutabilityCue: "read-only",
+		},
+	}
+
+	for _, tc := range cases {
+		description := descriptions[tc.name]
+		if description == "" {
+			t.Fatalf("missing description for %s", tc.name)
+		}
+		for _, want := range []string{tc.useCaseCue, tc.boundaryCue, tc.mutabilityCue} {
+			if !strings.Contains(description, want) {
+				t.Fatalf("description for %s = %q, want substring %q", tc.name, description, want)
+			}
+		}
+	}
+}
+
 func TestMemoryStoreToolCallsHTTP(t *testing.T) {
 	var gotMethod string
 	var gotPath string
