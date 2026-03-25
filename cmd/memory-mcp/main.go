@@ -877,7 +877,11 @@ func readMessage(r *bufio.Reader) ([]byte, error) {
 			break
 		}
 		if strings.HasPrefix(strings.ToLower(line), "content-length:") {
-			value := strings.TrimSpace(strings.TrimPrefix(line, "Content-Length:"))
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) != 2 {
+				return nil, fmt.Errorf("malformed content-length header")
+			}
+			value := strings.TrimSpace(parts[1])
 			n, err := strconv.Atoi(value)
 			if err != nil {
 				return nil, err

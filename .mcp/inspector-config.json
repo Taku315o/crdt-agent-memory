@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "memory-mcp": {
+      "command": "/Users/hizawatakuto/Documents/MyProject/crdt-agent-memory/bin/memory-mcp",
+      "args": ["--config", "/Users/hizawatakuto/Documents/MyProject/crdt-agent-memory/mcp-dev.yaml"],
+      "env": {
+        "CRSQLITE_PATH": "/Users/hizawatakuto/Documents/MyProject/crdt-agent-memory/.tools/crsqlite/crsqlite.dylib",
+        "SQLITE_VEC_PATH": "/Users/hizawatakuto/Documents/MyProject/crdt-agent-memory/.tools/sqlite-vec/vec0.dylib"
+      }
+    }
+  }
+}
