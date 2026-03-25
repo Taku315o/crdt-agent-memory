@@ -17,7 +17,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const chunkStrategyVersion = 1
+const chunkStrategyVersion = 2
 
 type Service struct {
 	db *sql.DB
@@ -303,47 +303,33 @@ func upsertChunks(ctx context.Context, tx *sql.Tx, req SessionIngestRequest, chu
 	for _, chunk := range chunks {
 		rawMeta := `{}`
 		normalized := strings.ToLower(strings.TrimSpace(chunk.Text))
-		_, err := tx.ExecContext(ctx, `
+		result, err := tx.ExecContext(ctx, `
 			INSERT INTO transcript_chunks(
 				chunk_id, session_id, chunk_strategy_version, chunk_seq, chunk_kind, start_seq, end_seq,
 				text, normalized_text, content_hash, authored_at_ms, source_uri, sensitivity, retention_class,
 				is_indexable, metadata_json
 			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)
-			ON CONFLICT(chunk_id) DO UPDATE SET
-				chunk_kind = excluded.chunk_kind,
-				start_seq = excluded.start_seq,
-				end_seq = excluded.end_seq,
-				text = excluded.text,
-				normalized_text = excluded.normalized_text,
-				content_hash = excluded.content_hash,
-				authored_at_ms = excluded.authored_at_ms,
-				sensitivity = excluded.sensitivity,
-				retention_class = excluded.retention_class,
-				is_indexable = excluded.is_indexable,
-				metadata_json = excluded.metadata_json
+			ON CONFLICT(chunk_id) DO NOTHING
 		`, chunk.ChunkID, req.SessionID, chunkStrategyVersion, chunk.ChunkSeq, chunk.ChunkKind, chunk.StartSeq, chunk.EndSeq,
 			chunk.Text, normalized, digest(chunk.Text), chunk.AuthoredAtMS, chunk.Sensitivity, req.RetentionClass, 1, rawMeta)
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `
+		inserted, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if inserted == 0 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO retrieval_units(
 				unit_id, source_type, source_id, memory_space, namespace, unit_kind, title, body, body_hash,
 				authored_at_ms, sensitivity, retention_class, state, source_uri, project_key, branch_name, schema_version
 			) VALUES(?, 'transcript_chunk', ?, 'transcript', ?, ?, '', ?, ?, ?, ?, ?, 'active', '', ?, ?, 1)
-			ON CONFLICT(unit_id) DO UPDATE SET
-				namespace = excluded.namespace,
-				unit_kind = excluded.unit_kind,
-				body = excluded.body,
-				body_hash = excluded.body_hash,
-				authored_at_ms = excluded.authored_at_ms,
-				sensitivity = excluded.sensitivity,
-				retention_class = excluded.retention_class,
-				project_key = excluded.project_key,
-				branch_name = excluded.branch_name
+			ON CONFLICT(unit_id) DO NOTHING
 		`, chunk.ChunkID, chunk.ChunkID, req.Namespace, chunk.ChunkKind, chunk.Text, digest(chunk.Text), chunk.AuthoredAtMS,
-			chunk.Sensitivity, req.RetentionClass, req.ProjectKey, req.BranchName)
-		if err != nil {
+			chunk.Sensitivity, req.RetentionClass, req.ProjectKey, req.BranchName); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -437,9 +423,6 @@ func inferCandidateSubject(kind, text string) string {
 }
 
 func upsertTranscriptArtifacts(ctx context.Context, tx *sql.Tx, namespace string, chunk Chunk) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM transcript_artifact_spans WHERE chunk_id = ?`, chunk.ChunkID); err != nil {
-		return err
-	}
 	matches := artifactPattern.FindAllStringIndex(chunk.Text, -1)
 	for _, match := range matches {
 		start, end := match[0], match[1]
@@ -463,6 +446,7 @@ func upsertTranscriptArtifacts(ctx context.Context, tx *sql.Tx, namespace string
 			INSERT INTO transcript_artifact_spans(
 				span_id, chunk_id, artifact_id, start_offset, end_offset, start_line, end_line, quote_hash, authored_at_ms
 			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(span_id) DO NOTHING
 		`, uuid.NewString(), chunk.ChunkID, artifactID, start, end, startLine, endLine, digest(uri), chunk.AuthoredAtMS); err != nil {
 			return err
 		}

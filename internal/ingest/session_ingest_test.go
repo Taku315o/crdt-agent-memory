@@ -109,7 +109,7 @@ func TestIngestSessionExtractsTranscriptArtifactSpans(t *testing.T) {
 	}
 
 	var spanCount, refCount int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM transcript_artifact_spans WHERE chunk_id = 'session-artifact:v1:1'`).Scan(&spanCount); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM transcript_artifact_spans WHERE chunk_id = 'session-artifact:v2:1'`).Scan(&spanCount); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM private_artifact_refs WHERE local_namespace = 'crdt-agent-memory'`).Scan(&refCount); err != nil {
@@ -120,5 +120,50 @@ func TestIngestSessionExtractsTranscriptArtifactSpans(t *testing.T) {
 	}
 	if refCount < 2 {
 		t.Fatalf("ref_count = %d, want at least 2", refCount)
+	}
+}
+
+func TestIngestSessionKeepsOlderChunkVersionsImmutable(t *testing.T) {
+	ctx := context.Background()
+	db, svc := newFixture(t)
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO transcript_chunks(
+			chunk_id, session_id, chunk_strategy_version, chunk_seq, chunk_kind, start_seq, end_seq,
+			text, normalized_text, content_hash, authored_at_ms, source_uri, sensitivity, retention_class,
+			is_indexable, metadata_json
+		) VALUES('session-versioned:v1:1', 'session-versioned', 1, 1, 'decision', 1, 2, 'old decision text', 'old decision text', 'oldhash', 100, '', 'private', 'default', 1, '{}')
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO retrieval_units(
+			unit_id, source_type, source_id, memory_space, namespace, unit_kind, title, body, body_hash,
+			authored_at_ms, sensitivity, retention_class, state, source_uri, project_key, branch_name, schema_version
+		) VALUES('session-versioned:v1:1', 'transcript_chunk', 'session-versioned:v1:1', 'transcript', 'crdt-agent-memory', 'decision', '', 'old decision text', 'oldhash', 100, 'private', 'default', 'active', '', '', '', 1)
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.IngestSession(ctx, SessionIngestRequest{
+		SessionID:   "session-versioned",
+		SourceKind:  "cli",
+		Namespace:   "crdt-agent-memory",
+		StartedAtMS: 100,
+		EndedAtMS:   200,
+		Messages: []SessionMessage{
+			{Seq: 1, Role: "user", Content: "方針を決めたい", AuthoredAtMS: 100},
+			{Seq: 2, Role: "assistant", Content: "decision: new decision text", AuthoredAtMS: 110},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM transcript_chunks WHERE session_id = 'session-versioned'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("chunk_count = %d, want 2", count)
 	}
 }

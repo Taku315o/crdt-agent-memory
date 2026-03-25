@@ -271,6 +271,7 @@ func (s *Service) collectRetrievalFTS5Candidates(ctx context.Context, req Recall
 	args = appendInClause(&query, "namespace", req.Namespaces, args)
 	args = appendInClause(&query, "source_type", req.SourceTypes, args)
 	args = appendInClause(&query, "unit_kind", req.UnitKinds, args)
+	query.WriteString(latestTranscriptChunkFilter("unit_id"))
 	query.WriteString(" ORDER BY bm25(retrieval_fts_index) LIMIT ?")
 	args = append(args, limit)
 
@@ -309,6 +310,7 @@ func (s *Service) collectRetrievalLIKECandidates(ctx context.Context, req Recall
 	args = appendInClause(&query, "namespace", req.Namespaces, args)
 	args = appendInClause(&query, "source_type", req.SourceTypes, args)
 	args = appendInClause(&query, "unit_kind", req.UnitKinds, args)
+	query.WriteString(latestTranscriptChunkFilter("unit_id"))
 	query.WriteString(" ORDER BY unit_id")
 
 	rows, err := s.db.QueryContext(ctx, query.String(), args...)
@@ -411,6 +413,7 @@ func (s *Service) collectRetrievalVectorCandidates(ctx context.Context, req Reca
 	args = appendInClause(&query, "ru.namespace", req.Namespaces, args)
 	args = appendInClause(&query, "ru.source_type", req.SourceTypes, args)
 	args = appendInClause(&query, "ru.unit_kind", req.UnitKinds, args)
+	query.WriteString(latestTranscriptChunkFilter("ru.unit_id"))
 	if req.ProjectKey != "" {
 		query.WriteString(" AND ru.project_key = ?")
 		args = append(args, req.ProjectKey)
@@ -503,6 +506,9 @@ func (s *Service) loadRetrievalCandidateRows(ctx context.Context, candidates map
 		WHERE ru.state = 'active'
 		  AND COALESCE(vs.signature_status, '') != ?
 	`)
+	sb.WriteString(latestTranscriptChunkFilter("ru.unit_id"))
+	sb.WriteString(`
+	`)
 	args = append(args, SignatureStatusInvalidSignature)
 	rows, err := s.db.QueryContext(ctx, sb.String(), args...)
 	if err != nil {
@@ -545,6 +551,26 @@ func (s *Service) loadRetrievalCandidateRows(ctx context.Context, candidates map
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func latestTranscriptChunkFilter(unitRef string) string {
+	return fmt.Sprintf(`
+	  AND (
+		%s NOT IN (
+			SELECT unit_id FROM retrieval_units WHERE source_type = 'transcript_chunk'
+		)
+		OR EXISTS (
+			SELECT 1
+			FROM transcript_chunks tc
+			WHERE tc.chunk_id = %s
+			  AND tc.chunk_strategy_version = (
+				SELECT MAX(tc2.chunk_strategy_version)
+				FROM transcript_chunks tc2
+				WHERE tc2.session_id = tc.session_id
+			  )
+		)
+	  )
+	`, unitRef, unitRef)
 }
 
 func rankRetrievalRows(rows []recallCandidateRow, graphStats map[recallKey]recallGraphStat, artifactStats map[recallKey]recallArtifactStat, limit int) []RecallResult {

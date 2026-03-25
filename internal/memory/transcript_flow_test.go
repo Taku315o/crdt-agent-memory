@@ -29,7 +29,7 @@ func TestPromoteAndPublishFromTranscript(t *testing.T) {
 	}
 
 	privateID, err := fixture.svc.Promote(ctx, PromoteRequest{
-		ChunkIDs:   []string{"session-promote:v1:1"},
+		ChunkIDs:   []string{"session-promote:v2:1"},
 		Namespace:  "crdt-agent-memory",
 		MemoryType: "decision",
 		Subject:    "retrieval_units adoption",
@@ -235,7 +235,7 @@ func TestPromoteInheritsTranscriptArtifactSpans(t *testing.T) {
 	}
 
 	privateID, err := fixture.svc.Promote(ctx, PromoteRequest{
-		ChunkIDs:   []string{"session-artifact-promote:v1:1"},
+		ChunkIDs:   []string{"session-artifact-promote:v2:1"},
 		Namespace:  "crdt-agent-memory",
 		MemoryType: "decision",
 		Subject:    "main.go cleanup",
@@ -282,7 +282,7 @@ func TestPromoteInfersSupportRelationAndTraceDecisionReturnsTranscriptSources(t 
 	}
 
 	decisionID, err := fixture.svc.Promote(ctx, PromoteRequest{
-		ChunkIDs:   []string{"session-trace:v1:1"},
+		ChunkIDs:   []string{"session-trace:v2:1"},
 		Namespace:  "crdt-agent-memory",
 		MemoryType: "decision",
 		Subject:    "adopt a.go",
@@ -291,7 +291,7 @@ func TestPromoteInfersSupportRelationAndTraceDecisionReturnsTranscriptSources(t 
 		t.Fatal(err)
 	}
 	rationaleID, err := fixture.svc.Promote(ctx, PromoteRequest{
-		ChunkIDs:   []string{"session-trace:v1:2"},
+		ChunkIDs:   []string{"session-trace:v2:2"},
 		Namespace:  "crdt-agent-memory",
 		MemoryType: "rationale",
 		Subject:    "why a.go",
