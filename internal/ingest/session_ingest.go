@@ -369,6 +369,7 @@ func upsertPromotionCandidate(ctx context.Context, tx *sql.Tx, req SessionIngest
 			authored_at_ms = excluded.authored_at_ms,
 			updated_at_ms = excluded.updated_at_ms,
 			author_agent_id = excluded.author_agent_id,
+			origin_peer_id = excluded.origin_peer_id,
 			sensitivity = excluded.sensitivity,
 			retention_class = excluded.retention_class,
 			project_key = excluded.project_key,
