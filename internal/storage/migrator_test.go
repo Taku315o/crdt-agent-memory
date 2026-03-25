@@ -51,4 +51,3 @@ func TestShouldBackfillFTSIndexes(t *testing.T) {
 		t.Fatal("needBackfill = false, want true when a new migration was applied")
 	}
 }
-
