@@ -34,6 +34,28 @@ var (
 	ErrPrivateOnly    = errors.New("private memory cannot be superseded")
 )
 
+type Candidate struct {
+	CandidateID      string `json:"candidate_id"`
+	Namespace        string `json:"namespace"`
+	CandidateType    string `json:"candidate_type"`
+	Status           string `json:"status"`
+	Subject          string `json:"subject"`
+	Body             string `json:"body"`
+	SourceURI        string `json:"source_uri"`
+	AuthorAgentID    string `json:"author_agent_id"`
+	OriginPeerID     string `json:"origin_peer_id"`
+	Sensitivity      string `json:"sensitivity"`
+	RetentionClass   string `json:"retention_class"`
+	ProjectKey       string `json:"project_key"`
+	BranchName       string `json:"branch_name"`
+	AuthoredAtMS     int64  `json:"authored_at_ms"`
+	CreatedAtMS      int64  `json:"created_at_ms"`
+	UpdatedAtMS      int64  `json:"updated_at_ms"`
+	ApprovedMemoryID string `json:"approved_memory_id"`
+	ReviewedAtMS     int64  `json:"reviewed_at_ms"`
+	ReviewNote       string `json:"review_note"`
+}
+
 type StoreRequest struct {
 	MemoryID      string                `json:"memory_id,omitempty"`
 	Visibility    Visibility            `json:"visibility"`
@@ -90,6 +112,30 @@ type PromoteRequest struct {
 	OriginPeerID  string   `json:"origin_peer_id,omitempty"`
 	AuthoredAtMS  int64    `json:"authored_at_ms,omitempty"`
 	SourceURI     string   `json:"source_uri,omitempty"`
+}
+
+type ListCandidatesRequest struct {
+	Namespace  string `json:"namespace,omitempty"`
+	Status     string `json:"status,omitempty"`
+	ProjectKey string `json:"project_key,omitempty"`
+	BranchName string `json:"branch_name,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+}
+
+type ApproveCandidateRequest struct {
+	CandidateID   string `json:"candidate_id"`
+	MemoryType    string `json:"memory_type,omitempty"`
+	Subject       string `json:"subject,omitempty"`
+	Namespace     string `json:"namespace,omitempty"`
+	AuthorAgentID string `json:"author_agent_id,omitempty"`
+	OriginPeerID  string `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64  `json:"authored_at_ms,omitempty"`
+	SourceURI     string `json:"source_uri,omitempty"`
+}
+
+type RejectCandidateRequest struct {
+	CandidateID string `json:"candidate_id"`
+	ReviewNote  string `json:"review_note,omitempty"`
 }
 
 type PublishRequest struct {

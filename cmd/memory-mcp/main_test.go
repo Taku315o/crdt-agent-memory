@@ -91,7 +91,7 @@ func TestToolsListIncludesStoreAndRecall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"memory.store", "memory.recall", "context.build", "memory.supersede", "memory.signal", "memory.explain", "memory.trace_decision", "memory.sync_status"} {
+	for _, name := range []string{"memory.store", "memory.recall", "memory.candidates.list", "memory.candidates.approve", "memory.candidates.reject", "context.build", "memory.supersede", "memory.signal", "memory.explain", "memory.trace_decision", "memory.sync_status"} {
 		if !strings.Contains(string(raw), name) {
 			t.Fatalf("tool list missing %s", name)
 		}

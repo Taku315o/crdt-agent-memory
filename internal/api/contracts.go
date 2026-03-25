@@ -120,6 +120,42 @@ type PromoteResponse struct {
 	PrivateMemoryID string `json:"private_memory_id"`
 }
 
+type ListCandidatesRequest struct {
+	Namespace  string `json:"namespace,omitempty"`
+	Status     string `json:"status,omitempty"`
+	ProjectKey string `json:"project_key,omitempty"`
+	BranchName string `json:"branch_name,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+}
+
+type ListCandidatesResponse struct {
+	Items []memory.Candidate `json:"items"`
+}
+
+type ApproveCandidateRequest struct {
+	CandidateID   string `json:"candidate_id"`
+	MemoryType    string `json:"memory_type,omitempty"`
+	Subject       string `json:"subject,omitempty"`
+	Namespace     string `json:"namespace,omitempty"`
+	AuthorAgentID string `json:"author_agent_id,omitempty"`
+	OriginPeerID  string `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64  `json:"authored_at_ms,omitempty"`
+	SourceURI     string `json:"source_uri,omitempty"`
+}
+
+type ApproveCandidateResponse struct {
+	PrivateMemoryID string `json:"private_memory_id"`
+}
+
+type RejectCandidateRequest struct {
+	CandidateID string `json:"candidate_id"`
+	ReviewNote  string `json:"review_note,omitempty"`
+}
+
+type RejectCandidateResponse struct {
+	Status string `json:"status"`
+}
+
 type PublishRequest struct {
 	PrivateMemoryID string `json:"private_memory_id"`
 	RedactionPolicy string `json:"redaction_policy,omitempty"`
@@ -351,6 +387,36 @@ func (r PromoteRequest) ToMemoryRequest() memory.PromoteRequest {
 		OriginPeerID:  r.OriginPeerID,
 		AuthoredAtMS:  r.AuthoredAtMS,
 		SourceURI:     r.SourceURI,
+	}
+}
+
+func (r ListCandidatesRequest) ToMemoryRequest() memory.ListCandidatesRequest {
+	return memory.ListCandidatesRequest{
+		Namespace:  r.Namespace,
+		Status:     r.Status,
+		ProjectKey: r.ProjectKey,
+		BranchName: r.BranchName,
+		Limit:      r.Limit,
+	}
+}
+
+func (r ApproveCandidateRequest) ToMemoryRequest() memory.ApproveCandidateRequest {
+	return memory.ApproveCandidateRequest{
+		CandidateID:   r.CandidateID,
+		MemoryType:    r.MemoryType,
+		Subject:       r.Subject,
+		Namespace:     r.Namespace,
+		AuthorAgentID: r.AuthorAgentID,
+		OriginPeerID:  r.OriginPeerID,
+		AuthoredAtMS:  r.AuthoredAtMS,
+		SourceURI:     r.SourceURI,
+	}
+}
+
+func (r RejectCandidateRequest) ToMemoryRequest() memory.RejectCandidateRequest {
+	return memory.RejectCandidateRequest{
+		CandidateID: r.CandidateID,
+		ReviewNote:  r.ReviewNote,
 	}
 }
 

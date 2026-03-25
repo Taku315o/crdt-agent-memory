@@ -613,6 +613,23 @@ func (s *Service) retrievalFTSEnabled(ctx context.Context) (bool, error) {
 }
 
 func (s *Service) Promote(ctx context.Context, req PromoteRequest) (string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	memoryID, err := s.promoteTx(ctx, tx, req)
+	if err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return memoryID, nil
+}
+
+func (s *Service) promoteTx(ctx context.Context, tx *sql.Tx, req PromoteRequest) (string, error) {
 	if len(req.ChunkIDs) == 0 {
 		return "", errors.New("chunk_ids is required")
 	}
@@ -631,11 +648,6 @@ func (s *Service) Promote(ctx context.Context, req PromoteRequest) (string, erro
 	if req.OriginPeerID == "" {
 		req.OriginPeerID = "peer/local"
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
 
 	bodies := make([]string, 0, len(req.ChunkIDs))
 	artifactSpans := make([]ArtifactSpanInput, 0)
@@ -705,9 +717,6 @@ func (s *Service) Promote(ctx context.Context, req PromoteRequest) (string, erro
 		`, uuid.NewString(), chunkID, storeReq.MemoryID, req.AuthoredAtMS); err != nil {
 			return "", err
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return "", err
 	}
 	return storeReq.MemoryID, nil
 }

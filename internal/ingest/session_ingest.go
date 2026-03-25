@@ -355,8 +355,85 @@ func upsertChunks(ctx context.Context, tx *sql.Tx, req SessionIngestRequest, chu
 		if err := upsertTranscriptArtifacts(ctx, tx, req.Namespace, chunk); err != nil {
 			return err
 		}
+		if err := upsertPromotionCandidate(ctx, tx, req, chunk); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func upsertPromotionCandidate(ctx context.Context, tx *sql.Tx, req SessionIngestRequest, chunk Chunk) error {
+	if !isPromotionCandidateKind(chunk.ChunkKind) {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	candidateID := "cand_" + digest(chunk.ChunkID)
+	subject := inferCandidateSubject(chunk.ChunkKind, chunk.Text)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO memory_candidates(
+			candidate_id, namespace, candidate_type, status, subject, body, source_uri,
+			authored_at_ms, created_at_ms, updated_at_ms, author_agent_id, origin_peer_id,
+			sensitivity, retention_class, project_key, branch_name, metadata_json
+		) VALUES(?, ?, ?, 'pending', ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}')
+		ON CONFLICT(candidate_id) DO UPDATE SET
+			namespace = excluded.namespace,
+			candidate_type = excluded.candidate_type,
+			subject = excluded.subject,
+			body = excluded.body,
+			authored_at_ms = excluded.authored_at_ms,
+			updated_at_ms = excluded.updated_at_ms,
+			author_agent_id = excluded.author_agent_id,
+			sensitivity = excluded.sensitivity,
+			retention_class = excluded.retention_class,
+			project_key = excluded.project_key,
+			branch_name = excluded.branch_name
+		WHERE memory_candidates.status = 'pending'
+	`, candidateID, req.Namespace, chunk.ChunkKind, subject, chunk.Text, chunk.AuthoredAtMS, now, now,
+		"agent/ingest", "peer/local", chunk.Sensitivity, req.RetentionClass, req.ProjectKey, req.BranchName); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_candidate_chunks WHERE candidate_id = ?`, candidateID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO memory_candidate_chunks(link_id, candidate_id, chunk_id, ordinal)
+		VALUES(?, ?, ?, 0)
+	`, uuid.NewString(), candidateID, chunk.ChunkID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func isPromotionCandidateKind(kind string) bool {
+	switch kind {
+	case "decision", "task_candidate", "rationale", "debug_trace":
+		return true
+	default:
+		return false
+	}
+}
+
+func inferCandidateSubject(kind, text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return kind
+	}
+	firstLine := text
+	if idx := strings.IndexByte(firstLine, '\n'); idx >= 0 {
+		firstLine = firstLine[:idx]
+	}
+	if idx := strings.Index(firstLine, ":"); idx >= 0 && idx+1 < len(firstLine) {
+		firstLine = strings.TrimSpace(firstLine[idx+1:])
+	}
+	firstLine = strings.TrimSpace(firstLine)
+	if firstLine == "" {
+		return kind
+	}
+	runes := []rune(firstLine)
+	if len(runes) > 80 {
+		firstLine = string(runes[:80])
+	}
+	return firstLine
 }
 
 func upsertTranscriptArtifacts(ctx context.Context, tx *sql.Tx, namespace string, chunk Chunk) error {

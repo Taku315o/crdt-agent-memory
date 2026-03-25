@@ -74,6 +74,147 @@ func TestPromoteAndPublishFromTranscript(t *testing.T) {
 	}
 }
 
+func TestIngestCreatesPromotionCandidates(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+	ctx := context.Background()
+	ingestSvc := ingest.NewService(fixture.db)
+
+	if err := ingestSvc.IngestSession(ctx, ingest.SessionIngestRequest{
+		SessionID:   "session-candidates",
+		SourceKind:  "cli",
+		Namespace:   "crdt-agent-memory",
+		StartedAtMS: 100,
+		EndedAtMS:   300,
+		Messages: []ingest.SessionMessage{
+			{Seq: 1, Role: "user", Content: "方針を残して", AuthoredAtMS: 100},
+			{Seq: 2, Role: "assistant", Content: "decision: retrieval_units を採用する", AuthoredAtMS: 110},
+			{Seq: 3, Role: "user", Content: "次の作業も残して", AuthoredAtMS: 200},
+			{Seq: 4, Role: "assistant", Content: "TODO add candidate approval UI", AuthoredAtMS: 210},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := fixture.svc.ListCandidates(ctx, ListCandidatesRequest{
+		Namespace: "crdt-agent-memory",
+		Status:    "pending",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("candidate count = %d, want 2", len(items))
+	}
+}
+
+func TestApproveCandidatePromotesTranscriptCandidate(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+	ctx := context.Background()
+	ingestSvc := ingest.NewService(fixture.db)
+
+	if err := ingestSvc.IngestSession(ctx, ingest.SessionIngestRequest{
+		SessionID:   "session-approve-candidate",
+		SourceKind:  "cli",
+		Namespace:   "crdt-agent-memory",
+		StartedAtMS: 100,
+		EndedAtMS:   200,
+		Messages: []ingest.SessionMessage{
+			{Seq: 1, Role: "user", Content: "重要な方針を残して", AuthoredAtMS: 100},
+			{Seq: 2, Role: "assistant", Content: "decision: candidate buffer を導入する", AuthoredAtMS: 110},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := fixture.svc.ListCandidates(ctx, ListCandidatesRequest{
+		Namespace: "crdt-agent-memory",
+		Status:    "pending",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("candidate count = %d, want 1", len(items))
+	}
+
+	privateID, err := fixture.svc.ApproveCandidate(ctx, ApproveCandidateRequest{
+		CandidateID: items[0].CandidateID,
+		MemoryType:  "decision",
+		Subject:     "candidate buffer adoption",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var status string
+	var approvedID string
+	if err := fixture.db.QueryRowContext(ctx, `
+		SELECT status, approved_memory_id
+		FROM memory_candidates
+		WHERE candidate_id = ?
+	`, items[0].CandidateID).Scan(&status, &approvedID); err != nil {
+		t.Fatal(err)
+	}
+	if status != "approved" {
+		t.Fatalf("status = %q, want approved", status)
+	}
+	if approvedID != privateID {
+		t.Fatalf("approved_memory_id = %q, want %q", approvedID, privateID)
+	}
+}
+
+func TestRejectCandidateMarksCandidateRejected(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+	ctx := context.Background()
+	ingestSvc := ingest.NewService(fixture.db)
+
+	if err := ingestSvc.IngestSession(ctx, ingest.SessionIngestRequest{
+		SessionID:   "session-reject-candidate",
+		SourceKind:  "cli",
+		Namespace:   "crdt-agent-memory",
+		StartedAtMS: 100,
+		EndedAtMS:   200,
+		Messages: []ingest.SessionMessage{
+			{Seq: 1, Role: "user", Content: "軽いメモだけ", AuthoredAtMS: 100},
+			{Seq: 2, Role: "assistant", Content: "TODO maybe revisit later", AuthoredAtMS: 110},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := fixture.svc.ListCandidates(ctx, ListCandidatesRequest{Status: "pending", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("candidate count = %d, want 1", len(items))
+	}
+
+	if err := fixture.svc.RejectCandidate(ctx, RejectCandidateRequest{
+		CandidateID: items[0].CandidateID,
+		ReviewNote:  "not durable enough",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var status string
+	var privateCount int
+	if err := fixture.db.QueryRowContext(ctx, `SELECT status FROM memory_candidates WHERE candidate_id = ?`, items[0].CandidateID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM private_memory_nodes`).Scan(&privateCount); err != nil {
+		t.Fatal(err)
+	}
+	if status != "rejected" {
+		t.Fatalf("status = %q, want rejected", status)
+	}
+	if privateCount != 0 {
+		t.Fatalf("private_count = %d, want 0", privateCount)
+	}
+}
+
 func TestPromoteInheritsTranscriptArtifactSpans(t *testing.T) {
 	fixture := newMemoryFixture(t, "peer-a")
 	ctx := context.Background()
