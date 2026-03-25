@@ -7,7 +7,7 @@
 
 
 
-A distributed, local-first long-term memory system for AI agents that automatically syncs across peers using CRDT and P2P networks.
+A distributed, local-first memory system for AI agents with transcript ingest, structured memory promotion, and CRDT/P2P sync for shareable memory only.
 
 ## Overview
 
@@ -25,6 +25,8 @@ A distributed, local-first long-term memory system for AI agents that automatica
 - 🏠 **Local-First**: Each agent keeps a full SQLite database; network is optional
 - 🤝 **P2P Sync**: Automatic convergence via CRDT without a central authority
 - 🔍 **Semantic Search**: Local FTS5 + vector indexing; derived data stays private
+- 📝 **Transcript Layer**: Raw session logs stay local, searchable, and source-aware
+- ⬆️ **Promote / Publish**: Turn transcript into private structured memory, then explicitly publish sanitized shared memory
 - 🎯 **Partial Sharing**: Choose what to sync — team memory separate from personal memory
 - 🔒 **Trust-Aware**: Configure which peers you trust for each namespace
 - ⚡ **Agent-Ready**: MCP adapter + HTTP API + gRPC for easy integration
@@ -38,8 +40,8 @@ A distributed, local-first long-term memory system for AI agents that automatica
 │  ↓ MCP / HTTP / gRPC                                │
 ├─────────────────────────────────────────────────────┤
 │  Memory Service  (memoryd)                          │
-│  ├─ API Layer (store, recall, supersede)            │
-│  ├─ SQLite Core Database                            │
+│  ├─ API Layer (store, recall, context.build)        │
+│  ├─ Transcript + Structured Memory                  │
 │  └─ Local Index (FTS5 + sqlite-vec)                 │
 ├─────────────────────────────────────────────────────┤
 │  Sync Engine    (syncd)                             │
@@ -55,7 +57,7 @@ A distributed, local-first long-term memory system for AI agents that automatica
 └─────────────────────────────────────────────────────┘
 ```
 
-**Key Design Principle**: Shared tables use CRDT; derived data (embeddings, vector indices) stays local.
+**Key Design Principle**: Raw transcript and derived retrieval state stay local. Only promoted shared memory enters the CRDT sync lane.
 
 ## Quick Start
 
@@ -120,6 +122,17 @@ curl -X POST http://127.0.0.1:3101/v1/memory/recall \
   }'
 ```
 
+**Build an agent-ready context bundle:**
+```bash
+curl -X POST http://127.0.0.1:3101/v1/context/build \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "why raw transcript is not synchronized",
+    "namespace": "team/dev",
+    "limit_per_section": 4
+  }'
+```
+
 **Update a memory:**
 ```bash
 curl -X POST http://127.0.0.1:3101/v1/memory/{memory_id}/supersede \
@@ -149,7 +162,7 @@ Register the MCP server in your Claude config:
 }
 ```
 
-Then in Claude, use tools like `memory.store` and `memory.recall` naturally.
+Then in Claude, use tools like `memory.store`, `memory.recall`, `context.build`, `memory.promote`, and `memory.publish` naturally.
 
 ### Mode B: Local HTTP API (For Custom Agents)
 
@@ -225,13 +238,17 @@ Bundled native extensions are embedded for `darwin/arm64`, `darwin/amd64`, `linu
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/memory/store` | POST | Store a new memory (fact/decision/summary) |
-| `/v1/memory/recall` | POST | Search and retrieve memories |
-| `/v1/memory/{id}/supersede` | POST | Correct or update an existing memory |
-| `/v1/memory/{id}/signal` | POST | Add a confidence/importance signal |
-| `/v1/memory/trace_decision` | POST | Log decision reasoning |
-| `/v1/health` | GET | Health check |
-| `/v1/diagnostics/sync` | GET | Sync status across peers |
+| `/v1/memory/store` | POST | Store a new shared/private structured memory |
+| `/v1/memory/recall` | POST | Unified retrieval across transcript/private/shared memory |
+| `/v1/context/build` | POST | Build a role-organized bundle for agent context |
+| `/v1/memory/promote` | POST | Promote transcript chunk(s) into private structured memory |
+| `/v1/memory/publish` | POST | Publish sanitized private memory into shared memory |
+| `/v1/memory/supersede` | POST | Correct or update an existing shared memory |
+| `/v1/memory/signal` | POST | Add a confidence/importance signal |
+| `/v1/memory/explain` | POST | Explain recall/trust scoring for one memory |
+| `/v1/memory/trace_decision` | POST | Trace decision graph, artifacts, and transcript provenance |
+| `/healthz` | GET | Health check |
+| `/v1/sync/status` | GET | Sync status across peers |
 
 See [docs/architecture/mcp-tool-contract.md](docs/architecture/mcp-tool-contract.md) for full schema.
 

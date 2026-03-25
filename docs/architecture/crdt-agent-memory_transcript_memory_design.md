@@ -1,9 +1,37 @@
 # CRDT-Agent-Memory 設計書
 ## Transcript Layer / Promote / Publish 導入設計
 
-Version: draft-1
+Version: draft-2
 Target repo: `Taku315o/crdt-agent-memory`
 Target branch: `main`
+
+---
+
+## 0. 実装反映状況
+
+この文書は transcript / promote / publish 系の正本設計である。
+ただし 2026-03-25 時点で、以下はすでに実装へ反映済みである。
+
+- `transcript_sessions`, `transcript_messages`, `transcript_chunks`
+- `transcript_artifact_spans`, `transcript_promotions`, `memory_publications`
+- `retrieval_units`, `retrieval_index_queue`, `retrieval_embeddings`
+- transcript ingest service
+- unified `memory.recall`
+- `memory.promote`
+- `memory.publish`
+- publish 時の `redaction_policy`
+- transcript artifact extraction と promote 時の artifact span 継承
+- `memory.trace_decision` での transcript provenance 返却
+- `context.build`
+
+一方で、以下はまだ部分実装または未実装である。
+
+- transcript chunk version の複数世代共存運用
+- promotion candidate レイヤの明示化
+- `transcript.search` の独立 API
+- context packing の高度化
+
+以下の章は最終形の設計意図を説明する。
 
 ---
 
@@ -561,6 +589,12 @@ agent 向け API は最初から増やしすぎない。外向きは以下 2 本
 - `include_shared=true`
 - optional filter: namespace, source_type, unit_kind, project_key, branch_name
 
+現実装:
+
+- transcript / private / shared を unified retrieval unit として検索する
+- `IncludePrivate`, `IncludeShared`, `IncludeTranscript`, `ProjectKey`, `BranchName`, `UnitKinds`, `SourceTypes` を受ける
+- FTS5 が使える環境では `MATCH/bm25`、無い環境では token-aware lexical fallback を使う
+
 ### context.build
 
 - recall の結果をそのまま返さず、役割ごとに整理した context bundle を返す
@@ -653,6 +687,18 @@ half-life を unit_kind ごとに変える。
 
 エージェントは raw top-k より、役割で束ねられた文脈を読む方が強い。
 
+現実装:
+
+- `context.build` API は追加済み
+- 現在の section は
+  - `active_private_decisions`
+  - `shared_constraints`
+  - `recent_discussions`
+  - `rejected_options`
+  - `open_tasks`
+  - `artifacts`
+- 各 section は単一ランキングの後段分解ではなく、section ごとの recall を個別実行して組み立てる
+
 ---
 
 ## 14. Promote 設計
@@ -693,6 +739,11 @@ transcript_chunk(s)
 6. transcript ↔ promoted memory link 保存
 7. retrieval_units upsert
 8. index enqueue
+
+現実装の追加点:
+
+- transcript から抽出した artifact spans を `private_artifact_spans` へ継承する
+- 同一 session 内で既に promote 済みの decision に対し、rationale/debug/task 系 chunk から `supports` を、否定語を含む chunk から `contradicts` を推定して `private_memory_edges` を張る
 
 ## 14.5 transcript-to-memory link
 
@@ -738,6 +789,13 @@ publish は **private structured memory を shared memory に変換する操作*
 6. `published_from_private_memory` link 保存
 7. sync queue / change log は既存 shared lane を利用
 
+現実装の追加点:
+
+- `redaction_policy` は API 契約だけでなく実処理にも反映済み
+- `default` では secret らしい代入表現、Bearer token、`file://...`、ローカル絶対パスを redact する
+- `strict` では `source_uri` を全面的に落とす
+- 未対応 policy は publish を reject する
+
 ## 15.4 mapping table
 
 ```sql
@@ -770,6 +828,11 @@ publish 後の追跡と supersede 時の整合のため。
 - error string
 
 を抽出して `transcript_artifact_spans` または artifact ref へ紐づける。
+
+現実装:
+
+- 現在は file path / local absolute path / `file://...` / `http(s)://...` の抽出までを実装済み
+- 関数名 / PR 番号 / issue 番号 / commit SHA / error string の構造抽出は未実装
 
 ## 16.2 promote 側
 
@@ -1064,6 +1127,8 @@ raw transcript lane が無いため、後続 migration で追加する。file
 - retrieval_units for transcript only
 - lexical recall only
 
+状態: 完了
+
 ### Phase 2: unified recall
 
 - retrieval_units for private/shared memory も導入
@@ -1071,11 +1136,15 @@ raw transcript lane が無いため、後続 migration で追加する。file
 - hybrid recall を transcript + memory へ拡張
 - private-first default へ変更
 
+状態: 完了
+
 ### Phase 3: promote
 
 - transcript_promotions
 - `memory.promote`
 - artifact trace inheritance
+
+状態: 完了（promotion candidate レイヤは未分離）
 
 ### Phase 4: publish
 
@@ -1084,12 +1153,21 @@ raw transcript lane が無いため、後続 migration で追加する。file
 - redaction / share policy
 - existing CRDT/P2P lane 接続
 
+状態: 完了
+
 ### Phase 5: refinement
 
 - context.build
 - chunk strategy v2
 - retention jobs
 - publish recommendation
+
+状態:
+
+- `context.build`: 完了
+- chunk strategy v2: 未着手
+- retention jobs: 未着手
+- publish recommendation: 未着手
 
 ---
 

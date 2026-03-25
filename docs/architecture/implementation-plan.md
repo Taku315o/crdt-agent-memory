@@ -1,7 +1,7 @@
 # Implementation Plan
 
-Status: Updated after Phase 1 implementation
-Date: 2026-03-17
+Status: Updated after transcript / promote / publish / context implementation
+Date: 2026-03-25
 
 ## 1. Purpose
 
@@ -18,10 +18,14 @@ Date: 2026-03-17
 - supersede
 - local HTTP control surface
 
-未実装:
+追加完了:
 
-- 本格的な semantic retrieval
-- 署名 encode/sign/verify
+- unified retrieval units
+- transcript/private/shared fused recall
+- `memory.promote`
+- `memory.publish`
+- `memory.trace_decision`
+- `context.build`
 
 ### Phase 1: Shared Sync Core
 
@@ -39,6 +43,29 @@ Date: 2026-03-17
 - apply 後の reindex queue / worker
 - sync status HTTP surface
 - minimal `memory.sync_status` MCP tool
+
+### Phase 2: Transcript / Promote / Publish
+
+完了:
+
+- `transcript_sessions`, `transcript_messages`, `transcript_chunks`
+- deterministic transcript ingest
+- transcript artifact extraction
+- transcript/private/shared unified retrieval
+- publish-time redaction
+- transcript provenance in trace
+- MCP/HTTP surface for promote/publish/context build
+
+部分完了:
+
+- relation promotion は heuristic ベースの初期版
+- context bundle は初期 section 構成
+
+未実装:
+
+- transcript chunk の複数世代共存運用
+- `transcript.search` の独立 API
+- promotion candidate レイヤの明示化
 
 現在の transport:
 
@@ -96,7 +123,13 @@ HTTP:
 - `GET /v1/diag`
 - `POST /v1/memory/store`
 - `POST /v1/memory/recall`
+- `POST /v1/context/build`
+- `POST /v1/memory/promote`
+- `POST /v1/memory/publish`
 - `POST /v1/memory/supersede`
+- `POST /v1/memory/signal`
+- `POST /v1/memory/explain`
+- `POST /v1/memory/trace_decision`
 - `GET /v1/sync/status?namespace=...`
 
 ### `syncd`
@@ -115,16 +148,16 @@ Internal sync endpoints:
 
 実装済み:
 
-- `memory.sync_status`
-
-未実装:
-
 - `memory.store`
 - `memory.recall`
+- `context.build`
+- `memory.promote`
+- `memory.publish`
 - `memory.supersede`
 - `memory.signal`
 - `memory.trace_decision`
 - `memory.explain`
+- `memory.sync_status`
 
 ## 5. Acceptance State
 
@@ -140,14 +173,16 @@ Phase 1 として現在確認済み:
 未完了の主要項目:
 
 - Iroh transport への差し替え
-- full MCP tool surface
-- signed payload / trust weighting / scrubber
+- transcript/search/context のさらに細かい役割分離
+- transcript chunk versioning の本格運用
+- promotion candidate pipeline
 
 ## 6. Next Work
 
 次の現実的な実装順は次。
 
-1. `http-dev` transport を interface 化
-2. Iroh transport を追加
-3. `memory.store` / `memory.recall` / `memory.supersede` を MCP に追加
-4. signature / trust / scrubber を Phase 2 に進める
+1. `transcript.search` を独立 surface として追加
+2. `context.build` の packing を agent-tuned に改善
+3. transcript chunk versioning と active chunk-set pointer を追加
+4. promotion candidate レイヤを追加
+5. `http-dev` transport を Iroh に差し替える
