@@ -747,7 +747,7 @@ func (s *Service) promoteTx(ctx context.Context, tx *sql.Tx, req PromoteRequest)
 	return storeReq.MemoryID, nil
 }
 
-func promoteInferredRelations(ctx context.Context, tx *sql.Tx, memoryID string, authoredAtMS int64, chunks []transcriptChunkRecord) error {
+func promoteInferredRelations(ctx context.Context, tx *sql.Tx, memoryID string, authoredAtMS int64, chunks []transcriptChunkRecord) (err error) {
 	if len(chunks) == 0 {
 		return nil
 	}
@@ -760,37 +760,42 @@ func promoteInferredRelations(ctx context.Context, tx *sql.Tx, memoryID string, 
 		sessionIDs[chunk.SessionID] = struct{}{}
 	}
 	for sessionID := range sessionIDs {
-		rows, err := tx.QueryContext(ctx, `
-			SELECT DISTINCT tp.memory_id
-			FROM transcript_promotions tp
-			JOIN transcript_chunks tc ON tc.chunk_id = tp.chunk_id
-			JOIN private_memory_nodes pmn ON pmn.memory_id = tp.memory_id
-			WHERE tc.session_id = ?
-			  AND tp.memory_id != ?
-			  AND pmn.memory_type = 'decision'
-		`, sessionID, memoryID)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var targetID string
-			if err := rows.Scan(&targetID); err != nil {
-				rows.Close()
+		if err := func() (err error) {
+			rows, err := tx.QueryContext(ctx, `
+				SELECT DISTINCT tp.memory_id
+				FROM transcript_promotions tp
+				JOIN transcript_chunks tc ON tc.chunk_id = tp.chunk_id
+				JOIN private_memory_nodes pmn ON pmn.memory_id = tp.memory_id
+				WHERE tc.session_id = ?
+				  AND tp.memory_id != ?
+				  AND pmn.memory_type = 'decision'
+			`, sessionID, memoryID)
+			if err != nil {
 				return err
 			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO private_memory_edges(edge_id, from_memory_id, to_memory_id, relation_type, weight, authored_at_ms)
-				SELECT ?, ?, ?, ?, 1.0, ?
-				WHERE NOT EXISTS (
-					SELECT 1 FROM private_memory_edges
-					WHERE from_memory_id = ? AND to_memory_id = ? AND relation_type = ?
-				)
-			`, uuid.NewString(), memoryID, targetID, relationType, authoredAtMS, memoryID, targetID, relationType); err != nil {
-				rows.Close()
-				return err
+			defer func() {
+				if cerr := rows.Close(); err == nil {
+					err = cerr
+				}
+			}()
+			for rows.Next() {
+				var targetID string
+				if err := rows.Scan(&targetID); err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(ctx, `
+					INSERT INTO private_memory_edges(edge_id, from_memory_id, to_memory_id, relation_type, weight, authored_at_ms)
+					SELECT ?, ?, ?, ?, 1.0, ?
+					WHERE NOT EXISTS (
+						SELECT 1 FROM private_memory_edges
+						WHERE from_memory_id = ? AND to_memory_id = ? AND relation_type = ?
+					)
+				`, uuid.NewString(), memoryID, targetID, relationType, authoredAtMS, memoryID, targetID, relationType); err != nil {
+					return err
+				}
 			}
-		}
-		if err := rows.Close(); err != nil {
+			return rows.Err()
+		}(); err != nil {
 			return err
 		}
 	}

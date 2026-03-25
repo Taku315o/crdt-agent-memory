@@ -222,12 +222,32 @@ func collectArtifactRows(ctx context.Context, db *sql.DB, ids []string, spanTabl
 		placeholders = append(placeholders, "?")
 		args = append(args, id)
 	}
-	query := fmt.Sprintf(`
-		SELECT DISTINCT COALESCE(r.uri, ''), COALESCE(r.%s, '')
-		FROM %s s
-		JOIN %s r ON r.%s = s.artifact_id
-		WHERE s.%s IN (%s)
-	`, titleColumn, spanTable, refTable, joinColumn, keyColumn, strings.Join(placeholders, ","))
+	var query string
+	switch {
+	case spanTable == "private_artifact_spans" && refTable == "private_artifact_refs" && keyColumn == "memory_id" && joinColumn == "artifact_id" && titleColumn == "title":
+		query = `
+			SELECT DISTINCT COALESCE(r.uri, ''), COALESCE(r.title, '')
+			FROM private_artifact_spans s
+			JOIN private_artifact_refs r ON r.artifact_id = s.artifact_id
+			WHERE s.memory_id IN (` + strings.Join(placeholders, ",") + `)
+		`
+	case spanTable == "artifact_spans" && refTable == "artifact_refs" && keyColumn == "memory_id" && joinColumn == "artifact_id" && titleColumn == "title":
+		query = `
+			SELECT DISTINCT COALESCE(r.uri, ''), COALESCE(r.title, '')
+			FROM artifact_spans s
+			JOIN artifact_refs r ON r.artifact_id = s.artifact_id
+			WHERE s.memory_id IN (` + strings.Join(placeholders, ",") + `)
+		`
+	case spanTable == "transcript_artifact_spans" && refTable == "private_artifact_refs" && keyColumn == "chunk_id" && joinColumn == "artifact_id" && titleColumn == "title":
+		query = `
+			SELECT DISTINCT COALESCE(r.uri, ''), COALESCE(r.title, '')
+			FROM transcript_artifact_spans s
+			JOIN private_artifact_refs r ON r.artifact_id = s.artifact_id
+			WHERE s.chunk_id IN (` + strings.Join(placeholders, ",") + `)
+		`
+	default:
+		return fmt.Errorf("unsupported artifact row spec")
+	}
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
