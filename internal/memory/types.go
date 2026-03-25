@@ -34,6 +34,28 @@ var (
 	ErrPrivateOnly    = errors.New("private memory cannot be superseded")
 )
 
+type Candidate struct {
+	CandidateID      string `json:"candidate_id"`
+	Namespace        string `json:"namespace"`
+	CandidateType    string `json:"candidate_type"`
+	Status           string `json:"status"`
+	Subject          string `json:"subject"`
+	Body             string `json:"body"`
+	SourceURI        string `json:"source_uri"`
+	AuthorAgentID    string `json:"author_agent_id"`
+	OriginPeerID     string `json:"origin_peer_id"`
+	Sensitivity      string `json:"sensitivity"`
+	RetentionClass   string `json:"retention_class"`
+	ProjectKey       string `json:"project_key"`
+	BranchName       string `json:"branch_name"`
+	AuthoredAtMS     int64  `json:"authored_at_ms"`
+	CreatedAtMS      int64  `json:"created_at_ms"`
+	UpdatedAtMS      int64  `json:"updated_at_ms"`
+	ApprovedMemoryID string `json:"approved_memory_id"`
+	ReviewedAtMS     int64  `json:"reviewed_at_ms"`
+	ReviewNote       string `json:"review_note"`
+}
+
 type StoreRequest struct {
 	MemoryID      string                `json:"memory_id,omitempty"`
 	Visibility    Visibility            `json:"visibility"`
@@ -52,16 +74,25 @@ type StoreRequest struct {
 }
 
 type RecallRequest struct {
-	Query          string   `json:"query"`
-	Namespaces     []string `json:"namespaces,omitempty"`
-	IncludePrivate bool     `json:"include_private,omitempty"`
-	Limit          int      `json:"limit,omitempty"`
+	Query             string   `json:"query"`
+	Namespaces        []string `json:"namespaces,omitempty"`
+	IncludePrivate    bool     `json:"include_private,omitempty"`
+	IncludeShared     bool     `json:"include_shared,omitempty"`
+	IncludeTranscript bool     `json:"include_transcript,omitempty"`
+	ProjectKey        string   `json:"project_key,omitempty"`
+	BranchName        string   `json:"branch_name,omitempty"`
+	UnitKinds         []string `json:"unit_kinds,omitempty"`
+	SourceTypes       []string `json:"source_types,omitempty"`
+	Limit             int      `json:"limit,omitempty"`
 }
 
 type RecallResult struct {
+	UnitID         string `json:"unit_id"`
+	SourceType     string `json:"source_type"`
 	MemorySpace    string `json:"memory_space"`
 	MemoryID       string `json:"memory_id"`
 	Namespace      string `json:"namespace"`
+	UnitKind       string `json:"unit_kind"`
 	MemoryType     string `json:"memory_type"`
 	Subject        string `json:"subject"`
 	Body           string `json:"body"`
@@ -70,6 +101,68 @@ type RecallResult struct {
 	SourceURI      string `json:"source_uri"`
 	SourceHash     string `json:"source_hash"`
 	OriginPeerID   string `json:"origin_peer_id"`
+}
+
+type PromoteRequest struct {
+	ChunkIDs      []string `json:"chunk_ids"`
+	MemoryType    string   `json:"memory_type,omitempty"`
+	Subject       string   `json:"subject,omitempty"`
+	Namespace     string   `json:"namespace"`
+	AuthorAgentID string   `json:"author_agent_id,omitempty"`
+	OriginPeerID  string   `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64    `json:"authored_at_ms,omitempty"`
+	SourceURI     string   `json:"source_uri,omitempty"`
+}
+
+type ListCandidatesRequest struct {
+	Namespace  string `json:"namespace,omitempty"`
+	Status     string `json:"status,omitempty"`
+	ProjectKey string `json:"project_key,omitempty"`
+	BranchName string `json:"branch_name,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+}
+
+type ApproveCandidateRequest struct {
+	CandidateID   string `json:"candidate_id"`
+	MemoryType    string `json:"memory_type,omitempty"`
+	Subject       string `json:"subject,omitempty"`
+	Namespace     string `json:"namespace,omitempty"`
+	AuthorAgentID string `json:"author_agent_id,omitempty"`
+	OriginPeerID  string `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64  `json:"authored_at_ms,omitempty"`
+	SourceURI     string `json:"source_uri,omitempty"`
+}
+
+type RejectCandidateRequest struct {
+	CandidateID string `json:"candidate_id"`
+	ReviewNote  string `json:"review_note,omitempty"`
+}
+
+type PublishRequest struct {
+	PrivateMemoryID string `json:"private_memory_id"`
+	RedactionPolicy string `json:"redaction_policy,omitempty"`
+}
+
+type ContextBuildRequest struct {
+	Query           string   `json:"query"`
+	Namespaces      []string `json:"namespaces,omitempty"`
+	ProjectKey      string   `json:"project_key,omitempty"`
+	BranchName      string   `json:"branch_name,omitempty"`
+	LimitPerSection int      `json:"limit_per_section,omitempty"`
+}
+
+type ContextArtifact struct {
+	URI   string `json:"uri"`
+	Title string `json:"title"`
+}
+
+type ContextBundle struct {
+	ActivePrivateDecisions []RecallResult    `json:"active_private_decisions"`
+	SharedConstraints      []RecallResult    `json:"shared_constraints"`
+	RecentDiscussions      []RecallResult    `json:"recent_discussions"`
+	RejectedOptions        []RecallResult    `json:"rejected_options"`
+	OpenTasks              []RecallResult    `json:"open_tasks"`
+	Artifacts              []ContextArtifact `json:"artifacts"`
 }
 
 type SignalRequest struct {
@@ -147,11 +240,23 @@ type TraceDecisionArtifact struct {
 	QuoteHash   string `json:"quote_hash"`
 }
 
+type TraceTranscriptSource struct {
+	SessionID    string                  `json:"session_id"`
+	ChunkID      string                  `json:"chunk_id"`
+	ChunkKind    string                  `json:"chunk_kind"`
+	StartSeq     int                     `json:"start_seq"`
+	EndSeq       int                     `json:"end_seq"`
+	Text         string                  `json:"text"`
+	AuthoredAtMS int64                   `json:"authored_at_ms"`
+	Artifacts    []TraceDecisionArtifact `json:"artifacts"`
+}
+
 type TraceDecisionResult struct {
-	Decision       TraceDecisionNode       `json:"decision"`
-	Supports       []TraceDecisionHop      `json:"supports"`
-	Contradictions []TraceDecisionHop      `json:"contradictions"`
-	Artifacts      []TraceDecisionArtifact `json:"artifacts"`
+	Decision          TraceDecisionNode       `json:"decision"`
+	Supports          []TraceDecisionHop      `json:"supports"`
+	Contradictions    []TraceDecisionHop      `json:"contradictions"`
+	Artifacts         []TraceDecisionArtifact `json:"artifacts"`
+	TranscriptSources []TraceTranscriptSource `json:"transcript_sources"`
 }
 
 type ExplainProvenance struct {

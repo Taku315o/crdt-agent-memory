@@ -53,22 +53,6 @@ func (s *Service) Store(ctx context.Context, req StoreRequest) (string, error) {
 // Recall is a fused lexical+semantic+trust+graph+artifact reranker when
 // sqlite-vec is available, and degrades to lexical+trust+graph+artifact when
 // it is not.
-func (s *Service) Recall(ctx context.Context, req RecallRequest) ([]RecallResult, error) {
-	req.Query = strings.TrimSpace(req.Query)
-	if req.Query == "" {
-		return nil, errors.New("query is required")
-	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 10
-	}
-	vectorEnabled, err := s.vectorIndexEnabled(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return s.recallHybrid(ctx, req, limit, vectorEnabled)
-}
-
 func (s *Service) recallWithVector(ctx context.Context, req RecallRequest, limit int) ([]RecallResult, error) {
 	candidateLimit := limit * 10
 	if candidateLimit < 50 {
@@ -1003,12 +987,17 @@ func (s *Service) TraceDecision(ctx context.Context, req TraceDecisionRequest) (
 	if err != nil {
 		return TraceDecisionResult{}, err
 	}
+	transcriptSources, err := s.loadTraceTranscriptSources(ctx, visited)
+	if err != nil {
+		return TraceDecisionResult{}, err
+	}
 
 	return TraceDecisionResult{
-		Decision:       decision,
-		Supports:       supports,
-		Contradictions: contradictions,
-		Artifacts:      artifacts,
+		Decision:          decision,
+		Supports:          supports,
+		Contradictions:    contradictions,
+		Artifacts:         artifacts,
+		TranscriptSources: transcriptSources,
 	}, nil
 }
 
@@ -1192,6 +1181,9 @@ func (s *Service) storeTx(ctx context.Context, tx *sql.Tx, req StoreRequest, sig
 		return err
 	}
 	if err := insertRelations(ctx, tx, req); err != nil {
+		return err
+	}
+	if err := s.upsertRetrievalUnitForStore(ctx, tx, req); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -1434,22 +1426,59 @@ func (s *Service) loadExplainRecord(ctx context.Context, req ExplainRequest) (ex
 }
 
 func (s *Service) lookupLexicalBM25(ctx context.Context, req ExplainRequest) (float64, bool, error) {
-	var lexicalBM25 float64
-	err := s.db.QueryRowContext(ctx, `
-		SELECT bm25(memory_fts)
+	ftsEnabled, err := s.memoryFTSEnabled(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	if ftsEnabled {
+		var lexicalBM25 float64
+		err := s.db.QueryRowContext(ctx, `
+			SELECT bm25(memory_fts_index)
+			FROM memory_fts_index
+			WHERE memory_fts_index MATCH ?
+			  AND memory_space = ?
+			  AND memory_id = ?
+			LIMIT 1
+		`, ftsRecallQuery(req.Query), req.MemorySpace, req.MemoryID).Scan(&lexicalBM25)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return 0, false, nil
+			}
+			return 0, false, err
+		}
+		return lexicalBM25, true, nil
+	}
+
+	var matched int
+	err = s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
 		FROM memory_fts
-		WHERE memory_fts MATCH ?
+		WHERE (lower(subject) LIKE ? OR lower(body) LIKE ?)
 		  AND memory_space = ?
 		  AND memory_id = ?
 		LIMIT 1
-	`, req.Query, req.MemorySpace, req.MemoryID).Scan(&lexicalBM25)
+	`, "%"+strings.ToLower(req.Query)+"%", "%"+strings.ToLower(req.Query)+"%", req.MemorySpace, req.MemoryID).Scan(&matched)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return 0, false, nil
 		}
 		return 0, false, err
 	}
-	return lexicalBM25, true, nil
+	if matched == 0 {
+		return 0, false, nil
+	}
+	return 1, true, nil
+}
+
+func (s *Service) memoryFTSEnabled(ctx context.Context) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_fts_index' LIMIT 1
+	`).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (s *Service) loadSignalSummary(ctx context.Context, memorySpace, memoryID string) (map[string]ExplainSignalSummary, error) {
@@ -1743,6 +1772,132 @@ func (s *Service) loadTraceArtifacts(ctx context.Context, memorySpace string, me
 			return nil, err
 		}
 		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Service) loadTraceTranscriptSources(ctx context.Context, memoryIDs map[string]struct{}) ([]TraceTranscriptSource, error) {
+	if len(memoryIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, 0, len(memoryIDs))
+	args := make([]any, 0, len(memoryIDs))
+	for memoryID := range memoryIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, memoryID)
+	}
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT
+			tp.memory_id,
+			tc.session_id,
+			tc.chunk_id,
+			tc.chunk_kind,
+			tc.start_seq,
+			tc.end_seq,
+			tc.text,
+			tc.authored_at_ms
+		FROM transcript_promotions tp
+		JOIN transcript_chunks tc
+		  ON tc.chunk_id = tp.chunk_id
+		WHERE tp.memory_id IN (%s)
+		ORDER BY tc.authored_at_ms DESC, tc.chunk_id
+	`, strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type sourceRow struct {
+		memoryID string
+		source   TraceTranscriptSource
+	}
+	var sourceRows []sourceRow
+	chunkIDs := make([]string, 0)
+	for rows.Next() {
+		var row sourceRow
+		if err := rows.Scan(
+			&row.memoryID,
+			&row.source.SessionID,
+			&row.source.ChunkID,
+			&row.source.ChunkKind,
+			&row.source.StartSeq,
+			&row.source.EndSeq,
+			&row.source.Text,
+			&row.source.AuthoredAtMS,
+		); err != nil {
+			return nil, err
+		}
+		sourceRows = append(sourceRows, row)
+		chunkIDs = append(chunkIDs, row.source.ChunkID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	artifactMap, err := s.loadTraceTranscriptArtifacts(ctx, chunkIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TraceTranscriptSource, 0, len(sourceRows))
+	for _, row := range sourceRows {
+		row.source.Artifacts = artifactMap[row.source.ChunkID]
+		out = append(out, row.source)
+	}
+	return out, nil
+}
+
+func (s *Service) loadTraceTranscriptArtifacts(ctx context.Context, chunkIDs []string) (map[string][]TraceDecisionArtifact, error) {
+	out := map[string][]TraceDecisionArtifact{}
+	if len(chunkIDs) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, 0, len(chunkIDs))
+	args := make([]any, 0, len(chunkIDs))
+	for _, chunkID := range chunkIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, chunkID)
+	}
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT
+			s.chunk_id,
+			s.artifact_id,
+			'',
+			COALESCE(r.uri, ''),
+			COALESCE(r.title, ''),
+			COALESCE(r.mime_type, ''),
+			s.start_offset,
+			s.end_offset,
+			s.start_line,
+			s.end_line,
+			s.quote_hash
+		FROM transcript_artifact_spans s
+		LEFT JOIN private_artifact_refs r
+		  ON r.artifact_id = s.artifact_id
+		WHERE s.chunk_id IN (%s)
+		ORDER BY s.authored_at_ms, s.span_id
+	`, strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var chunkID string
+		var item TraceDecisionArtifact
+		if err := rows.Scan(
+			&chunkID,
+			&item.ArtifactID,
+			&item.MemoryID,
+			&item.URI,
+			&item.Title,
+			&item.MimeType,
+			&item.StartOffset,
+			&item.EndOffset,
+			&item.StartLine,
+			&item.EndLine,
+			&item.QuoteHash,
+		); err != nil {
+			return nil, err
+		}
+		out[chunkID] = append(out[chunkID], item)
 	}
 	return out, rows.Err()
 }

@@ -1,11 +1,10 @@
-PRAGMA trusted_schema = ON;
-
-CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-    memory_space UNINDEXED,
-    memory_id UNINDEXED,
-    namespace UNINDEXED,
-    subject,
-    body
+CREATE TABLE IF NOT EXISTS memory_fts (
+    memory_space TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    namespace TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    PRIMARY KEY (memory_space, memory_id)
 );
 
 CREATE TRIGGER IF NOT EXISTS trg_memory_nodes_fts_insert

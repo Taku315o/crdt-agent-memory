@@ -53,17 +53,26 @@ type StoreResponse struct {
 }
 
 type RecallRequest struct {
-	Query          string   `json:"query"`
-	Namespace      string   `json:"namespace,omitempty"`
-	Namespaces     []string `json:"namespaces,omitempty"`
-	TopK           int      `json:"top_k,omitempty"`
-	IncludePrivate bool     `json:"include_private,omitempty"`
-	Limit          int      `json:"limit,omitempty"`
+	Query             string   `json:"query"`
+	Namespace         string   `json:"namespace,omitempty"`
+	Namespaces        []string `json:"namespaces,omitempty"`
+	TopK              int      `json:"top_k,omitempty"`
+	IncludePrivate    bool     `json:"include_private,omitempty"`
+	IncludeShared     bool     `json:"include_shared,omitempty"`
+	IncludeTranscript bool     `json:"include_transcript,omitempty"`
+	ProjectKey        string   `json:"project_key,omitempty"`
+	BranchName        string   `json:"branch_name,omitempty"`
+	UnitKinds         []string `json:"unit_kinds,omitempty"`
+	SourceTypes       []string `json:"source_types,omitempty"`
+	Limit             int      `json:"limit,omitempty"`
 }
 
 type RecallItem struct {
 	MemoryRef      MemoryRef `json:"memory_ref"`
+	UnitID         string    `json:"unit_id"`
+	SourceType     string    `json:"source_type"`
 	Namespace      string    `json:"namespace"`
+	UnitKind       string    `json:"unit_kind"`
 	MemoryType     string    `json:"memory_type"`
 	Subject        string    `json:"subject"`
 	Body           string    `json:"body"`
@@ -76,6 +85,84 @@ type RecallItem struct {
 
 type RecallResponse struct {
 	Items []RecallItem `json:"items"`
+}
+
+type ContextBuildRequest struct {
+	Query           string   `json:"query"`
+	Namespace       string   `json:"namespace,omitempty"`
+	Namespaces      []string `json:"namespaces,omitempty"`
+	ProjectKey      string   `json:"project_key,omitempty"`
+	BranchName      string   `json:"branch_name,omitempty"`
+	LimitPerSection int      `json:"limit_per_section,omitempty"`
+}
+
+type ContextBuildResponse struct {
+	ActivePrivateDecisions []RecallItem             `json:"active_private_decisions"`
+	SharedConstraints      []RecallItem             `json:"shared_constraints"`
+	RecentDiscussions      []RecallItem             `json:"recent_discussions"`
+	RejectedOptions        []RecallItem             `json:"rejected_options"`
+	OpenTasks              []RecallItem             `json:"open_tasks"`
+	Artifacts              []memory.ContextArtifact `json:"artifacts"`
+}
+
+type PromoteRequest struct {
+	ChunkIDs      []string `json:"chunk_ids"`
+	MemoryType    string   `json:"memory_type,omitempty"`
+	Subject       string   `json:"subject,omitempty"`
+	Namespace     string   `json:"namespace"`
+	AuthorAgentID string   `json:"author_agent_id,omitempty"`
+	OriginPeerID  string   `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64    `json:"authored_at_ms,omitempty"`
+	SourceURI     string   `json:"source_uri,omitempty"`
+}
+
+type PromoteResponse struct {
+	PrivateMemoryID string `json:"private_memory_id"`
+}
+
+type ListCandidatesRequest struct {
+	Namespace  string `json:"namespace,omitempty"`
+	Status     string `json:"status,omitempty"`
+	ProjectKey string `json:"project_key,omitempty"`
+	BranchName string `json:"branch_name,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+}
+
+type ListCandidatesResponse struct {
+	Items []memory.Candidate `json:"items"`
+}
+
+type ApproveCandidateRequest struct {
+	CandidateID   string `json:"candidate_id"`
+	MemoryType    string `json:"memory_type,omitempty"`
+	Subject       string `json:"subject,omitempty"`
+	Namespace     string `json:"namespace,omitempty"`
+	AuthorAgentID string `json:"author_agent_id,omitempty"`
+	OriginPeerID  string `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64  `json:"authored_at_ms,omitempty"`
+	SourceURI     string `json:"source_uri,omitempty"`
+}
+
+type ApproveCandidateResponse struct {
+	PrivateMemoryID string `json:"private_memory_id"`
+}
+
+type RejectCandidateRequest struct {
+	CandidateID string `json:"candidate_id"`
+	ReviewNote  string `json:"review_note,omitempty"`
+}
+
+type RejectCandidateResponse struct {
+	Status string `json:"status"`
+}
+
+type PublishRequest struct {
+	PrivateMemoryID string `json:"private_memory_id"`
+	RedactionPolicy string `json:"redaction_policy,omitempty"`
+}
+
+type PublishResponse struct {
+	SharedMemoryID string `json:"shared_memory_id"`
 }
 
 type SupersedeRequest struct {
@@ -145,10 +232,11 @@ type ExplainResponse struct {
 }
 
 type TraceDecisionResponse struct {
-	Decision       memory.TraceDecisionNode       `json:"decision"`
-	Supports       []memory.TraceDecisionHop      `json:"supports"`
-	Contradictions []memory.TraceDecisionHop      `json:"contradictions"`
-	Artifacts      []memory.TraceDecisionArtifact `json:"artifacts"`
+	Decision          memory.TraceDecisionNode       `json:"decision"`
+	Supports          []memory.TraceDecisionHop      `json:"supports"`
+	Contradictions    []memory.TraceDecisionHop      `json:"contradictions"`
+	Artifacts         []memory.TraceDecisionArtifact `json:"artifacts"`
+	TranscriptSources []memory.TraceTranscriptSource `json:"transcript_sources"`
 }
 
 type SyncStatusPeer struct {
@@ -274,7 +362,10 @@ func RecallItemFromResult(result memory.RecallResult) RecallItem {
 			MemorySpace: result.MemorySpace,
 			MemoryID:    result.MemoryID,
 		},
+		UnitID:         result.UnitID,
+		SourceType:     result.SourceType,
 		Namespace:      result.Namespace,
+		UnitKind:       result.UnitKind,
 		MemoryType:     result.MemoryType,
 		Subject:        result.Subject,
 		Body:           result.Body,
@@ -284,6 +375,89 @@ func RecallItemFromResult(result memory.RecallResult) RecallItem {
 		SourceHash:     result.SourceHash,
 		OriginPeerID:   result.OriginPeerID,
 	}
+}
+
+func (r PromoteRequest) ToMemoryRequest() memory.PromoteRequest {
+	return memory.PromoteRequest{
+		ChunkIDs:      r.ChunkIDs,
+		MemoryType:    r.MemoryType,
+		Subject:       r.Subject,
+		Namespace:     r.Namespace,
+		AuthorAgentID: r.AuthorAgentID,
+		OriginPeerID:  r.OriginPeerID,
+		AuthoredAtMS:  r.AuthoredAtMS,
+		SourceURI:     r.SourceURI,
+	}
+}
+
+func (r ListCandidatesRequest) ToMemoryRequest() memory.ListCandidatesRequest {
+	return memory.ListCandidatesRequest{
+		Namespace:  r.Namespace,
+		Status:     r.Status,
+		ProjectKey: r.ProjectKey,
+		BranchName: r.BranchName,
+		Limit:      r.Limit,
+	}
+}
+
+func (r ApproveCandidateRequest) ToMemoryRequest() memory.ApproveCandidateRequest {
+	return memory.ApproveCandidateRequest{
+		CandidateID:   r.CandidateID,
+		MemoryType:    r.MemoryType,
+		Subject:       r.Subject,
+		Namespace:     r.Namespace,
+		AuthorAgentID: r.AuthorAgentID,
+		OriginPeerID:  r.OriginPeerID,
+		AuthoredAtMS:  r.AuthoredAtMS,
+		SourceURI:     r.SourceURI,
+	}
+}
+
+func (r RejectCandidateRequest) ToMemoryRequest() memory.RejectCandidateRequest {
+	return memory.RejectCandidateRequest{
+		CandidateID: r.CandidateID,
+		ReviewNote:  r.ReviewNote,
+	}
+}
+
+func (r PublishRequest) ToMemoryRequest() memory.PublishRequest {
+	return memory.PublishRequest{
+		PrivateMemoryID: r.PrivateMemoryID,
+		RedactionPolicy: r.RedactionPolicy,
+	}
+}
+
+func (r ContextBuildRequest) ToMemoryRequest() memory.ContextBuildRequest {
+	namespaces := append([]string{}, r.Namespaces...)
+	if strings.TrimSpace(r.Namespace) != "" {
+		namespaces = append(namespaces, r.Namespace)
+	}
+	return memory.ContextBuildRequest{
+		Query:           r.Query,
+		Namespaces:      namespaces,
+		ProjectKey:      r.ProjectKey,
+		BranchName:      r.BranchName,
+		LimitPerSection: r.LimitPerSection,
+	}
+}
+
+func ContextBuildResponseFromResult(result memory.ContextBundle) ContextBuildResponse {
+	return ContextBuildResponse{
+		ActivePrivateDecisions: recallItemsFromResults(result.ActivePrivateDecisions),
+		SharedConstraints:      recallItemsFromResults(result.SharedConstraints),
+		RecentDiscussions:      recallItemsFromResults(result.RecentDiscussions),
+		RejectedOptions:        recallItemsFromResults(result.RejectedOptions),
+		OpenTasks:              recallItemsFromResults(result.OpenTasks),
+		Artifacts:              result.Artifacts,
+	}
+}
+
+func recallItemsFromResults(results []memory.RecallResult) []RecallItem {
+	items := make([]RecallItem, 0, len(results))
+	for _, item := range results {
+		items = append(items, RecallItemFromResult(item))
+	}
+	return items
 }
 
 func ExplainResponseFromResult(result memory.ExplainResult) ExplainResponse {
@@ -318,10 +492,11 @@ func ExplainResponseFromResult(result memory.ExplainResult) ExplainResponse {
 
 func TraceDecisionResponseFromResult(result memory.TraceDecisionResult) TraceDecisionResponse {
 	return TraceDecisionResponse{
-		Decision:       result.Decision,
-		Supports:       result.Supports,
-		Contradictions: result.Contradictions,
-		Artifacts:      result.Artifacts,
+		Decision:          result.Decision,
+		Supports:          result.Supports,
+		Contradictions:    result.Contradictions,
+		Artifacts:         result.Artifacts,
+		TranscriptSources: result.TranscriptSources,
 	}
 }
 

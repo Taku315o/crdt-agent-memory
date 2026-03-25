@@ -71,12 +71,67 @@ type storeToolRequest struct {
 }
 
 type recallToolRequest struct {
-	Query          string   `json:"query"`
-	Namespace      string   `json:"namespace,omitempty"`
-	Namespaces     []string `json:"namespaces,omitempty"`
-	TopK           int      `json:"top_k,omitempty"`
-	IncludePrivate bool     `json:"include_private,omitempty"`
-	Limit          int      `json:"limit,omitempty"`
+	Query             string   `json:"query"`
+	Namespace         string   `json:"namespace,omitempty"`
+	Namespaces        []string `json:"namespaces,omitempty"`
+	TopK              int      `json:"top_k,omitempty"`
+	IncludePrivate    bool     `json:"include_private,omitempty"`
+	IncludeShared     bool     `json:"include_shared,omitempty"`
+	IncludeTranscript bool     `json:"include_transcript,omitempty"`
+	ProjectKey        string   `json:"project_key,omitempty"`
+	BranchName        string   `json:"branch_name,omitempty"`
+	UnitKinds         []string `json:"unit_kinds,omitempty"`
+	SourceTypes       []string `json:"source_types,omitempty"`
+	Limit             int      `json:"limit,omitempty"`
+}
+
+type contextBuildToolRequest struct {
+	Query           string   `json:"query"`
+	Namespace       string   `json:"namespace,omitempty"`
+	Namespaces      []string `json:"namespaces,omitempty"`
+	ProjectKey      string   `json:"project_key,omitempty"`
+	BranchName      string   `json:"branch_name,omitempty"`
+	LimitPerSection int      `json:"limit_per_section,omitempty"`
+}
+
+type promoteToolRequest struct {
+	ChunkIDs      []string `json:"chunk_ids"`
+	MemoryType    string   `json:"memory_type,omitempty"`
+	Subject       string   `json:"subject,omitempty"`
+	Namespace     string   `json:"namespace"`
+	AuthorAgentID string   `json:"author_agent_id,omitempty"`
+	OriginPeerID  string   `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64    `json:"authored_at_ms,omitempty"`
+	SourceURI     string   `json:"source_uri,omitempty"`
+}
+
+type listCandidatesToolRequest struct {
+	Namespace  string `json:"namespace,omitempty"`
+	Status     string `json:"status,omitempty"`
+	ProjectKey string `json:"project_key,omitempty"`
+	BranchName string `json:"branch_name,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+}
+
+type approveCandidateToolRequest struct {
+	CandidateID   string `json:"candidate_id"`
+	MemoryType    string `json:"memory_type,omitempty"`
+	Subject       string `json:"subject,omitempty"`
+	Namespace     string `json:"namespace,omitempty"`
+	AuthorAgentID string `json:"author_agent_id,omitempty"`
+	OriginPeerID  string `json:"origin_peer_id,omitempty"`
+	AuthoredAtMS  int64  `json:"authored_at_ms,omitempty"`
+	SourceURI     string `json:"source_uri,omitempty"`
+}
+
+type rejectCandidateToolRequest struct {
+	CandidateID string `json:"candidate_id"`
+	ReviewNote  string `json:"review_note,omitempty"`
+}
+
+type publishToolRequest struct {
+	PrivateMemoryID string `json:"private_memory_id"`
+	RedactionPolicy string `json:"redaction_policy,omitempty"`
 }
 
 type memoryRef struct {
@@ -261,14 +316,110 @@ func toolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"query":           map[string]any{"type": "string"},
-					"namespace":       map[string]any{"type": "string"},
-					"namespaces":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					"top_k":           map[string]any{"type": "integer"},
-					"include_private": map[string]any{"type": "boolean"},
-					"limit":           map[string]any{"type": "integer"},
+					"query":              map[string]any{"type": "string"},
+					"namespace":          map[string]any{"type": "string"},
+					"namespaces":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"top_k":              map[string]any{"type": "integer"},
+					"include_private":    map[string]any{"type": "boolean"},
+					"include_shared":     map[string]any{"type": "boolean"},
+					"include_transcript": map[string]any{"type": "boolean"},
+					"project_key":        map[string]any{"type": "string"},
+					"branch_name":        map[string]any{"type": "string"},
+					"unit_kinds":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"source_types":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"limit":              map[string]any{"type": "integer"},
 				},
 				"required": []string{"query"},
+			},
+		},
+		{
+			"name":        "context.build",
+			"description": "build a role-organized context bundle from transcript and memory",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query":             map[string]any{"type": "string"},
+					"namespace":         map[string]any{"type": "string"},
+					"namespaces":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"project_key":       map[string]any{"type": "string"},
+					"branch_name":       map[string]any{"type": "string"},
+					"limit_per_section": map[string]any{"type": "integer"},
+				},
+				"required": []string{"query"},
+			},
+		},
+		{
+			"name":        "memory.candidates.list",
+			"description": "list pending or reviewed promotion candidates",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"namespace":   map[string]any{"type": "string"},
+					"status":      map[string]any{"type": "string"},
+					"project_key": map[string]any{"type": "string"},
+					"branch_name": map[string]any{"type": "string"},
+					"limit":       map[string]any{"type": "integer"},
+				},
+			},
+		},
+		{
+			"name":        "memory.candidates.approve",
+			"description": "approve a promotion candidate and materialize private memory",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"candidate_id":    map[string]any{"type": "string"},
+					"memory_type":     map[string]any{"type": "string"},
+					"subject":         map[string]any{"type": "string"},
+					"namespace":       map[string]any{"type": "string"},
+					"author_agent_id": map[string]any{"type": "string"},
+					"origin_peer_id":  map[string]any{"type": "string"},
+					"authored_at_ms":  map[string]any{"type": "integer"},
+					"source_uri":      map[string]any{"type": "string"},
+				},
+				"required": []string{"candidate_id"},
+			},
+		},
+		{
+			"name":        "memory.candidates.reject",
+			"description": "reject a promotion candidate without creating memory",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"candidate_id": map[string]any{"type": "string"},
+					"review_note":  map[string]any{"type": "string"},
+				},
+				"required": []string{"candidate_id"},
+			},
+		},
+		{
+			"name":        "memory.promote",
+			"description": "promote transcript chunks into a private structured memory",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"chunk_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"memory_type":     map[string]any{"type": "string"},
+					"subject":         map[string]any{"type": "string"},
+					"namespace":       map[string]any{"type": "string"},
+					"author_agent_id": map[string]any{"type": "string"},
+					"origin_peer_id":  map[string]any{"type": "string"},
+					"authored_at_ms":  map[string]any{"type": "integer"},
+					"source_uri":      map[string]any{"type": "string"},
+				},
+				"required": []string{"chunk_ids", "namespace"},
+			},
+		},
+		{
+			"name":        "memory.publish",
+			"description": "publish a private structured memory into shared memory",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"private_memory_id": map[string]any{"type": "string"},
+					"redaction_policy":  map[string]any{"type": "string"},
+				},
+				"required": []string{"private_memory_id"},
 			},
 		},
 		{
@@ -428,6 +579,97 @@ func callTool(cfg config.Config, params toolCallParams) (any, map[string]any) {
 			return nil, map[string]any{"code": -32602, "message": "query is required"}
 		}
 		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/recall", nil, args)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	case "context.build":
+		var args contextBuildToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if strings.TrimSpace(args.Query) == "" {
+			return nil, map[string]any{"code": -32602, "message": "query is required"}
+		}
+		payload, err := callAPI(cfg, http.MethodPost, "/v1/context/build", nil, args)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	case "memory.promote":
+		var args promoteToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if len(args.ChunkIDs) == 0 || strings.TrimSpace(args.Namespace) == "" {
+			return nil, map[string]any{"code": -32602, "message": "chunk_ids and namespace are required"}
+		}
+		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/promote", nil, args)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	case "memory.candidates.list":
+		var args listCandidatesToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		values := url.Values{}
+		if strings.TrimSpace(args.Namespace) != "" {
+			values.Set("namespace", args.Namespace)
+		}
+		if strings.TrimSpace(args.Status) != "" {
+			values.Set("status", args.Status)
+		}
+		if strings.TrimSpace(args.ProjectKey) != "" {
+			values.Set("project_key", args.ProjectKey)
+		}
+		if strings.TrimSpace(args.BranchName) != "" {
+			values.Set("branch_name", args.BranchName)
+		}
+		if args.Limit > 0 {
+			values.Set("limit", strconv.Itoa(args.Limit))
+		}
+		payload, err := callAPI(cfg, http.MethodGet, "/v1/memory/candidates", values, nil)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	case "memory.candidates.approve":
+		var args approveCandidateToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if strings.TrimSpace(args.CandidateID) == "" {
+			return nil, map[string]any{"code": -32602, "message": "candidate_id is required"}
+		}
+		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/candidates/approve", nil, args)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	case "memory.candidates.reject":
+		var args rejectCandidateToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if strings.TrimSpace(args.CandidateID) == "" {
+			return nil, map[string]any{"code": -32602, "message": "candidate_id is required"}
+		}
+		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/candidates/reject", nil, args)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	case "memory.publish":
+		var args publishToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if strings.TrimSpace(args.PrivateMemoryID) == "" {
+			return nil, map[string]any{"code": -32602, "message": "private_memory_id is required"}
+		}
+		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/publish", nil, args)
 		if err != nil {
 			return nil, rpcErrorFromEnvelope(payload, err)
 		}

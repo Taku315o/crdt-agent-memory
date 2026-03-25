@@ -41,6 +41,15 @@ type recallHTTPRequest struct {
 	Limit          int      `json:"limit"`
 }
 
+type contextBuildHTTPRequest struct {
+	Query           string   `json:"query"`
+	Namespace       string   `json:"namespace"`
+	Namespaces      []string `json:"namespaces"`
+	ProjectKey      string   `json:"project_key"`
+	BranchName      string   `json:"branch_name"`
+	LimitPerSection int      `json:"limit_per_section"`
+}
+
 type memoryRefHTTPRequest struct {
 	MemorySpace string `json:"memory_space"`
 	MemoryID    string `json:"memory_id"`
@@ -82,7 +91,7 @@ func TestToolsListIncludesStoreAndRecall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"memory.store", "memory.recall", "memory.supersede", "memory.signal", "memory.explain", "memory.trace_decision", "memory.sync_status"} {
+	for _, name := range []string{"memory.store", "memory.recall", "memory.candidates.list", "memory.candidates.approve", "memory.candidates.reject", "context.build", "memory.supersede", "memory.signal", "memory.explain", "memory.trace_decision", "memory.sync_status"} {
 		if !strings.Contains(string(raw), name) {
 			t.Fatalf("tool list missing %s", name)
 		}
@@ -217,6 +226,59 @@ func TestMemoryRecallToolCallsHTTP(t *testing.T) {
 	items := data["items"].([]any)
 	if len(items) != 1 {
 		t.Fatalf("item count = %d, want 1", len(items))
+	}
+}
+
+func TestContextBuildToolCallsHTTP(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	var gotBody contextBuildHTTPRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(apiEnvelope{
+			OK: true,
+			Data: map[string]any{
+				"active_private_decisions": []map[string]any{},
+				"shared_constraints":       []map[string]any{},
+				"recent_discussions":       []map[string]any{},
+				"rejected_options":         []map[string]any{},
+				"open_tasks":               []map[string]any{},
+				"artifacts":                []map[string]any{{"uri": "docs/architecture.md", "title": "architecture.md"}},
+			},
+			Warnings:  []string{},
+			RequestID: "req_context",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	resp := handle(config.Config{API: config.API{BaseURL: server.URL}}, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params: mustJSON(t, map[string]any{
+			"name": "context.build",
+			"arguments": map[string]any{
+				"query":             "sync policy",
+				"namespace":         "team/dev",
+				"limit_per_section": 3,
+			},
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %#v", resp.Error)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %s, want POST", gotMethod)
+	}
+	if gotPath != "/v1/context/build" {
+		t.Fatalf("path = %s, want /v1/context/build", gotPath)
+	}
+	if gotBody.Query != "sync policy" || gotBody.Namespace != "team/dev" || gotBody.LimitPerSection != 3 {
+		t.Fatalf("body = %#v", gotBody)
 	}
 }
 

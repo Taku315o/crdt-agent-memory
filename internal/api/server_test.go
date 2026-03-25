@@ -259,6 +259,90 @@ func TestMemoryRecallContract(t *testing.T) {
 	}
 }
 
+func TestCandidateApprovalContract(t *testing.T) {
+	fixture := newAPIFixture(t)
+	client := fixture.server.Client()
+
+	if _, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO transcript_chunks(
+			chunk_id, session_id, chunk_strategy_version, chunk_seq, chunk_kind, start_seq, end_seq,
+			text, normalized_text, content_hash, authored_at_ms, source_uri, sensitivity, retention_class,
+			is_indexable, metadata_json
+		) VALUES('chunk-approve', 'session-x', 1, 1, 'decision', 1, 2, 'decision: ship candidate buffer', 'decision: ship candidate buffer', 'h', 100, '', 'private', 'default', 1, '{}')
+		`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO memory_candidates(
+			candidate_id, namespace, candidate_type, status, subject, body, source_uri,
+			authored_at_ms, created_at_ms, updated_at_ms, author_agent_id, origin_peer_id,
+			sensitivity, retention_class, project_key, branch_name, metadata_json
+		) VALUES('cand-approve', 'team/dev', 'decision', 'pending', 'ship candidate buffer', 'decision: ship candidate buffer', '', 100, 100, 100, 'agent/ingest', 'peer/local', 'private', 'default', '', '', '{}')
+		`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO memory_candidate_chunks(link_id, candidate_id, chunk_id, ordinal)
+		VALUES('link-approve', 'cand-approve', 'chunk-approve', 0)
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, raw := doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/memory/candidates/approve", ApproveCandidateRequest{
+		CandidateID: "cand-approve",
+		Namespace:   "team/dev",
+		MemoryType:  "decision",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var envelope testEnvelope[ApproveCandidateResponse]
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Data.PrivateMemoryID == "" {
+		t.Fatal("expected private_memory_id")
+	}
+}
+
+func TestContextBuildContract(t *testing.T) {
+	fixture := newAPIFixture(t)
+	client := fixture.server.Client()
+
+	_, _ = doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/memory/store", StoreRequest{
+		Visibility:    memory.VisibilityPrivate,
+		Namespace:     "team/dev",
+		MemoryType:    "decision",
+		Body:          "context build private decision",
+		Subject:       "private",
+		SourceURI:     "docs/private.md",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+
+	resp, raw := doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/context/build", ContextBuildRequest{
+		Query:           "context build private decision",
+		Namespace:       "team/dev",
+		LimitPerSection: 3,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var envelope testEnvelope[ContextBuildResponse]
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.OK {
+		t.Fatal("expected ok=true")
+	}
+	if envelope.RequestID == "" {
+		t.Fatal("expected request_id")
+	}
+	if len(envelope.Data.ActivePrivateDecisions) == 0 {
+		t.Fatal("expected active_private_decisions")
+	}
+}
+
 func TestMemorySupersedeContract(t *testing.T) {
 	fixture := newAPIFixture(t)
 	client := fixture.server.Client()

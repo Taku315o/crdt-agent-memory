@@ -54,6 +54,9 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 func (w *Worker) ProcessOnce(ctx context.Context) error {
+	if err := w.processRetrievalItems(ctx); err != nil {
+		return err
+	}
 	items, err := w.pendingItems(ctx, 128)
 	if err != nil {
 		return err
@@ -62,6 +65,20 @@ func (w *Worker) ProcessOnce(ctx context.Context) error {
 	for _, it := range items {
 		if err := w.processItem(ctx, it); err != nil {
 			errs = append(errs, fmt.Errorf("%s/%s: %w", it.memorySpace, it.memoryID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (w *Worker) processRetrievalItems(ctx context.Context) error {
+	items, err := w.pendingRetrievalItems(ctx, 128)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, unitID := range items {
+		if err := w.processRetrievalItem(ctx, unitID); err != nil {
+			errs = append(errs, fmt.Errorf("retrieval/%s: %w", unitID, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -160,6 +177,144 @@ func (w *Worker) vectorIndexEnabled(ctx context.Context) (bool, error) {
 		w.vecOK = w.vecErr == nil
 	})
 	return w.vecOK, w.vecErr
+}
+
+func (w *Worker) retrievalVectorIndexEnabled(ctx context.Context) (bool, error) {
+	var version string
+	if err := w.db.QueryRowContext(ctx, `SELECT vec_version()`).Scan(&version); err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "no such function") && strings.Contains(msg, "vec_version") {
+			return false, nil
+		}
+		return false, err
+	}
+	var exists int
+	err := w.db.QueryRowContext(ctx, `
+		SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_embedding_vectors' LIMIT 1
+	`).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil && version != "", err
+}
+
+func (w *Worker) pendingRetrievalItems(ctx context.Context, limit int) ([]string, error) {
+	rows, err := w.db.QueryContext(ctx, `
+		SELECT unit_id
+		FROM retrieval_index_queue
+		WHERE processed_at_ms = 0
+		ORDER BY enqueued_at_ms
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var unitID string
+		if err := rows.Scan(&unitID); err != nil {
+			return nil, err
+		}
+		items = append(items, unitID)
+	}
+	return items, rows.Err()
+}
+
+type retrievalRecord struct {
+	unitID      string
+	memorySpace string
+	namespace   string
+	body        string
+	sensitivity string
+}
+
+func (w *Worker) processRetrievalItem(ctx context.Context, unitID string) error {
+	tx, err := w.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	record, found, err := fetchIndexableUnit(ctx, tx, unitID)
+	if err != nil {
+		return err
+	}
+	vecEnabled, err := w.retrievalVectorIndexEnabled(ctx)
+	if err != nil {
+		return err
+	}
+	if !found {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM retrieval_embeddings WHERE unit_id = ?`, unitID); err != nil {
+			return err
+		}
+		if vecEnabled {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM retrieval_embedding_vectors WHERE unit_id = ?`, unitID); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE retrieval_index_queue SET processed_at_ms = ? WHERE unit_id = ? AND processed_at_ms = 0`, time.Now().UnixMilli(), unitID); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if record.sensitivity != "secret" {
+		if err := upsertRetrievalEmbedding(ctx, tx, vecEnabled, record); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE retrieval_index_queue SET processed_at_ms = ? WHERE unit_id = ? AND processed_at_ms = 0`, time.Now().UnixMilli(), unitID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func fetchIndexableUnit(ctx context.Context, tx *sql.Tx, unitID string) (retrievalRecord, bool, error) {
+	var record retrievalRecord
+	err := tx.QueryRowContext(ctx, `
+		SELECT unit_id, memory_space, namespace, body, sensitivity
+		FROM retrieval_units
+		WHERE unit_id = ? AND state = 'active'
+	`, unitID).Scan(&record.unitID, &record.memorySpace, &record.namespace, &record.body, &record.sensitivity)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return retrievalRecord{}, false, nil
+		}
+		return retrievalRecord{}, false, err
+	}
+	return record, true, nil
+}
+
+func upsertRetrievalEmbedding(ctx context.Context, tx *sql.Tx, vecEnabled bool, record retrievalRecord) error {
+	vector, err := embedding.FromText(ctx, record.body)
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(vector)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO retrieval_embeddings(unit_id, memory_space, embedding_json, embedding_dim, indexed_at_ms)
+		VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(unit_id) DO UPDATE SET
+			memory_space = excluded.memory_space,
+			embedding_json = excluded.embedding_json,
+			embedding_dim = excluded.embedding_dim,
+			indexed_at_ms = excluded.indexed_at_ms
+	`, record.unitID, record.memorySpace, string(raw), len(vector), time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	if !vecEnabled {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM retrieval_embedding_vectors WHERE unit_id = ?`, record.unitID); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO retrieval_embedding_vectors(memory_space, unit_id, embedding)
+		VALUES(?, ?, vec_f32(?))
+	`, record.memorySpace, record.unitID, string(raw))
+	return err
 }
 
 func (w *Worker) processItem(ctx context.Context, item queueItem) error {

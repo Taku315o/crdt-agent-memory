@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"crdt-agent-memory/internal/memory"
@@ -29,10 +30,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/diag", s.handleDiag)
 	mux.HandleFunc("/v1/memory/store", s.handleStore)
 	mux.HandleFunc("/v1/memory/recall", s.handleRecall)
+	mux.HandleFunc("/v1/memory/candidates", s.handleListCandidates)
+	mux.HandleFunc("/v1/memory/candidates/approve", s.handleApproveCandidate)
+	mux.HandleFunc("/v1/memory/candidates/reject", s.handleRejectCandidate)
+	mux.HandleFunc("/v1/memory/promote", s.handlePromote)
+	mux.HandleFunc("/v1/memory/publish", s.handlePublish)
 	mux.HandleFunc("/v1/memory/supersede", s.handleSupersede)
 	mux.HandleFunc("/v1/memory/signal", s.handleSignal)
 	mux.HandleFunc("/v1/memory/explain", s.handleExplain)
 	mux.HandleFunc("/v1/memory/trace_decision", s.handleTraceDecision)
+	mux.HandleFunc("/v1/context/build", s.handleContextBuild)
 	mux.HandleFunc("/v1/sync/status", s.handleSyncStatus)
 	return mux
 }
@@ -106,10 +113,16 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		limit = req.TopK
 	}
 	results, err := s.Memory.Recall(r.Context(), memory.RecallRequest{
-		Query:          req.Query,
-		Namespaces:     namespaces,
-		IncludePrivate: req.IncludePrivate,
-		Limit:          limit,
+		Query:             req.Query,
+		Namespaces:        namespaces,
+		IncludePrivate:    req.IncludePrivate,
+		IncludeShared:     req.IncludeShared,
+		IncludeTranscript: req.IncludeTranscript,
+		ProjectKey:        req.ProjectKey,
+		BranchName:        req.BranchName,
+		UnitKinds:         req.UnitKinds,
+		SourceTypes:       req.SourceTypes,
+		Limit:             limit,
 	})
 	if err != nil {
 		s.writeMemoryError(w, requestID, err)
@@ -120,6 +133,110 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		items = append(items, RecallItemFromResult(item))
 	}
 	s.writeOK(w, requestID, RecallResponse{Items: items})
+}
+
+func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "", "METHOD_NOT_ALLOWED", "method not allowed", false, nil)
+		return
+	}
+	requestID := NewRequestID()
+	var req PromoteRequest
+	if err := decodeRequest(r.Body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		return
+	}
+	id, err := s.Memory.Promote(r.Context(), req.ToMemoryRequest())
+	if err != nil {
+		s.writeMemoryError(w, requestID, err)
+		return
+	}
+	s.writeOK(w, requestID, PromoteResponse{PrivateMemoryID: id})
+}
+
+func (s *Server) handleListCandidates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "", "METHOD_NOT_ALLOWED", "method not allowed", false, nil)
+		return
+	}
+	requestID := NewRequestID()
+	limit := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		var err error
+		limit, err = strconv.Atoi(raw)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", "limit must be an integer", false, nil)
+			return
+		}
+	}
+	items, err := s.Memory.ListCandidates(r.Context(), memory.ListCandidatesRequest{
+		Namespace:  strings.TrimSpace(r.URL.Query().Get("namespace")),
+		Status:     strings.TrimSpace(r.URL.Query().Get("status")),
+		ProjectKey: strings.TrimSpace(r.URL.Query().Get("project_key")),
+		BranchName: strings.TrimSpace(r.URL.Query().Get("branch_name")),
+		Limit:      limit,
+	})
+	if err != nil {
+		s.writeMemoryError(w, requestID, err)
+		return
+	}
+	s.writeOK(w, requestID, ListCandidatesResponse{Items: items})
+}
+
+func (s *Server) handleApproveCandidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "", "METHOD_NOT_ALLOWED", "method not allowed", false, nil)
+		return
+	}
+	requestID := NewRequestID()
+	var req ApproveCandidateRequest
+	if err := decodeRequest(r.Body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		return
+	}
+	id, err := s.Memory.ApproveCandidate(r.Context(), req.ToMemoryRequest())
+	if err != nil {
+		s.writeMemoryError(w, requestID, err)
+		return
+	}
+	s.writeOK(w, requestID, ApproveCandidateResponse{PrivateMemoryID: id})
+}
+
+func (s *Server) handleRejectCandidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "", "METHOD_NOT_ALLOWED", "method not allowed", false, nil)
+		return
+	}
+	requestID := NewRequestID()
+	var req RejectCandidateRequest
+	if err := decodeRequest(r.Body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		return
+	}
+	if err := s.Memory.RejectCandidate(r.Context(), req.ToMemoryRequest()); err != nil {
+		s.writeMemoryError(w, requestID, err)
+		return
+	}
+	s.writeOK(w, requestID, RejectCandidateResponse{Status: "rejected"})
+}
+
+func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "", "METHOD_NOT_ALLOWED", "method not allowed", false, nil)
+		return
+	}
+	requestID := NewRequestID()
+	var req PublishRequest
+	if err := decodeRequest(r.Body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		return
+	}
+	id, err := s.Memory.Publish(r.Context(), req.ToMemoryRequest())
+	if err != nil {
+		s.writeMemoryError(w, requestID, err)
+		return
+	}
+	s.writeOK(w, requestID, PublishResponse{SharedMemoryID: id})
 }
 
 func (s *Server) handleSupersede(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +344,25 @@ func (s *Server) handleTraceDecision(w http.ResponseWriter, r *http.Request) {
 	s.writeOK(w, requestID, TraceDecisionResponseFromResult(result))
 }
 
+func (s *Server) handleContextBuild(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "", "METHOD_NOT_ALLOWED", "method not allowed", false, nil)
+		return
+	}
+	requestID := NewRequestID()
+	var req ContextBuildRequest
+	if err := decodeRequest(r.Body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		return
+	}
+	result, err := s.Memory.ContextBuild(r.Context(), req.ToMemoryRequest())
+	if err != nil {
+		s.writeMemoryError(w, requestID, err)
+		return
+	}
+	s.writeOK(w, requestID, ContextBuildResponseFromResult(result))
+}
+
 func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 	requestID := NewRequestID()
 	namespace := strings.TrimSpace(r.URL.Query().Get("namespace"))
@@ -278,6 +414,10 @@ func (s *Server) writeMemoryError(w http.ResponseWriter, requestID string, err e
 		s.writeError(w, http.StatusNotFound, requestID, "NOT_FOUND", err.Error(), false, nil)
 	case errors.Is(err, memory.ErrPrivateOnly):
 		s.writeError(w, http.StatusBadRequest, requestID, "PRIVATE_ONLY", err.Error(), false, nil)
+	case errors.Is(err, memory.ErrCandidateNotFound):
+		s.writeError(w, http.StatusNotFound, requestID, "NOT_FOUND", err.Error(), false, nil)
+	case errors.Is(err, memory.ErrCandidateNotPending):
+		s.writeError(w, http.StatusConflict, requestID, "CANDIDATE_NOT_PENDING", err.Error(), false, nil)
 	default:
 		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
 	}
