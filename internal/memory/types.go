@@ -97,6 +97,28 @@ type PublishRequest struct {
 	RedactionPolicy string `json:"redaction_policy,omitempty"`
 }
 
+type ContextBuildRequest struct {
+	Query           string   `json:"query"`
+	Namespaces      []string `json:"namespaces,omitempty"`
+	ProjectKey      string   `json:"project_key,omitempty"`
+	BranchName      string   `json:"branch_name,omitempty"`
+	LimitPerSection int      `json:"limit_per_section,omitempty"`
+}
+
+type ContextArtifact struct {
+	URI   string `json:"uri"`
+	Title string `json:"title"`
+}
+
+type ContextBundle struct {
+	ActivePrivateDecisions []RecallResult    `json:"active_private_decisions"`
+	SharedConstraints      []RecallResult    `json:"shared_constraints"`
+	RecentDiscussions      []RecallResult    `json:"recent_discussions"`
+	RejectedOptions        []RecallResult    `json:"rejected_options"`
+	OpenTasks              []RecallResult    `json:"open_tasks"`
+	Artifacts              []ContextArtifact `json:"artifacts"`
+}
+
 type SignalRequest struct {
 	MemorySpace   string  `json:"memory_space"`
 	MemoryID      string  `json:"memory_id"`

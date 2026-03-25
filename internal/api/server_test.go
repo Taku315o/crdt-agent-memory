@@ -259,6 +259,44 @@ func TestMemoryRecallContract(t *testing.T) {
 	}
 }
 
+func TestContextBuildContract(t *testing.T) {
+	fixture := newAPIFixture(t)
+	client := fixture.server.Client()
+
+	_, _ = doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/memory/store", StoreRequest{
+		Visibility:    memory.VisibilityPrivate,
+		Namespace:     "team/dev",
+		MemoryType:    "decision",
+		Body:          "context build private decision",
+		Subject:       "private",
+		SourceURI:     "docs/private.md",
+		AuthorAgentID: "agent-a",
+		OriginPeerID:  "peer-a",
+	})
+
+	resp, raw := doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/context/build", ContextBuildRequest{
+		Query:           "context build private decision",
+		Namespace:       "team/dev",
+		LimitPerSection: 3,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var envelope testEnvelope[ContextBuildResponse]
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.OK {
+		t.Fatal("expected ok=true")
+	}
+	if envelope.RequestID == "" {
+		t.Fatal("expected request_id")
+	}
+	if len(envelope.Data.ActivePrivateDecisions) == 0 {
+		t.Fatal("expected active_private_decisions")
+	}
+}
+
 func TestMemorySupersedeContract(t *testing.T) {
 	fixture := newAPIFixture(t)
 	client := fixture.server.Client()

@@ -87,6 +87,24 @@ type RecallResponse struct {
 	Items []RecallItem `json:"items"`
 }
 
+type ContextBuildRequest struct {
+	Query           string   `json:"query"`
+	Namespace       string   `json:"namespace,omitempty"`
+	Namespaces      []string `json:"namespaces,omitempty"`
+	ProjectKey      string   `json:"project_key,omitempty"`
+	BranchName      string   `json:"branch_name,omitempty"`
+	LimitPerSection int      `json:"limit_per_section,omitempty"`
+}
+
+type ContextBuildResponse struct {
+	ActivePrivateDecisions []RecallItem             `json:"active_private_decisions"`
+	SharedConstraints      []RecallItem             `json:"shared_constraints"`
+	RecentDiscussions      []RecallItem             `json:"recent_discussions"`
+	RejectedOptions        []RecallItem             `json:"rejected_options"`
+	OpenTasks              []RecallItem             `json:"open_tasks"`
+	Artifacts              []memory.ContextArtifact `json:"artifacts"`
+}
+
 type PromoteRequest struct {
 	ChunkIDs      []string `json:"chunk_ids"`
 	MemoryType    string   `json:"memory_type,omitempty"`
@@ -341,6 +359,39 @@ func (r PublishRequest) ToMemoryRequest() memory.PublishRequest {
 		PrivateMemoryID: r.PrivateMemoryID,
 		RedactionPolicy: r.RedactionPolicy,
 	}
+}
+
+func (r ContextBuildRequest) ToMemoryRequest() memory.ContextBuildRequest {
+	namespaces := append([]string{}, r.Namespaces...)
+	if strings.TrimSpace(r.Namespace) != "" {
+		namespaces = append(namespaces, r.Namespace)
+	}
+	return memory.ContextBuildRequest{
+		Query:           r.Query,
+		Namespaces:      namespaces,
+		ProjectKey:      r.ProjectKey,
+		BranchName:      r.BranchName,
+		LimitPerSection: r.LimitPerSection,
+	}
+}
+
+func ContextBuildResponseFromResult(result memory.ContextBundle) ContextBuildResponse {
+	return ContextBuildResponse{
+		ActivePrivateDecisions: recallItemsFromResults(result.ActivePrivateDecisions),
+		SharedConstraints:      recallItemsFromResults(result.SharedConstraints),
+		RecentDiscussions:      recallItemsFromResults(result.RecentDiscussions),
+		RejectedOptions:        recallItemsFromResults(result.RejectedOptions),
+		OpenTasks:              recallItemsFromResults(result.OpenTasks),
+		Artifacts:              result.Artifacts,
+	}
+}
+
+func recallItemsFromResults(results []memory.RecallResult) []RecallItem {
+	items := make([]RecallItem, 0, len(results))
+	for _, item := range results {
+		items = append(items, RecallItemFromResult(item))
+	}
+	return items
 }
 
 func ExplainResponseFromResult(result memory.ExplainResult) ExplainResponse {

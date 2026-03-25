@@ -35,6 +35,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/memory/signal", s.handleSignal)
 	mux.HandleFunc("/v1/memory/explain", s.handleExplain)
 	mux.HandleFunc("/v1/memory/trace_decision", s.handleTraceDecision)
+	mux.HandleFunc("/v1/context/build", s.handleContextBuild)
 	mux.HandleFunc("/v1/sync/status", s.handleSyncStatus)
 	return mux
 }
@@ -271,6 +272,25 @@ func (s *Server) handleTraceDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeOK(w, requestID, TraceDecisionResponseFromResult(result))
+}
+
+func (s *Server) handleContextBuild(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "", "METHOD_NOT_ALLOWED", "method not allowed", false, nil)
+		return
+	}
+	requestID := NewRequestID()
+	var req ContextBuildRequest
+	if err := decodeRequest(r.Body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, requestID, "INVALID_ARGUMENT", err.Error(), false, nil)
+		return
+	}
+	result, err := s.Memory.ContextBuild(r.Context(), req.ToMemoryRequest())
+	if err != nil {
+		s.writeMemoryError(w, requestID, err)
+		return
+	}
+	s.writeOK(w, requestID, ContextBuildResponseFromResult(result))
 }
 
 func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {

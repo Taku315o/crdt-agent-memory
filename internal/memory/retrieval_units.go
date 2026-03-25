@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 
@@ -299,39 +300,91 @@ func (s *Service) collectRetrievalFTS5Candidates(ctx context.Context, req Recall
 func (s *Service) collectRetrievalLIKECandidates(ctx context.Context, req RecallRequest, limit int) ([]recallCandidate, error) {
 	query := strings.Builder{}
 	query.WriteString(`
-		SELECT unit_id
+		SELECT unit_id, title, body
 		FROM retrieval_fts
-		WHERE (lower(title) LIKE ? OR lower(body) LIKE ?)
+		WHERE 1 = 1
 	`)
-	pattern := "%" + strings.ToLower(req.Query) + "%"
-	args := []any{pattern, pattern}
+	args := []any{}
 	args = appendInClause(&query, "memory_space", allowedMemorySpaces(req), args)
 	args = appendInClause(&query, "namespace", req.Namespaces, args)
 	args = appendInClause(&query, "source_type", req.SourceTypes, args)
 	args = appendInClause(&query, "unit_kind", req.UnitKinds, args)
-	query.WriteString(" ORDER BY unit_id LIMIT ?")
-	args = append(args, limit)
+	query.WriteString(" ORDER BY unit_id")
 
 	rows, err := s.db.QueryContext(ctx, query.String(), args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []recallCandidate
-	rank := 0
+	type scoredUnit struct {
+		unitID string
+		score  int
+	}
+	terms := searchTerms(req.Query)
+	scored := make([]scoredUnit, 0)
 	for rows.Next() {
-		rank++
 		var unitID string
-		if err := rows.Scan(&unitID); err != nil {
+		var title string
+		var body string
+		if err := rows.Scan(&unitID, &title, &body); err != nil {
 			return nil, err
 		}
+		score := termMatchScore(terms, title+" "+body)
+		if score > 0 {
+			scored = append(scored, scoredUnit{unitID: unitID, score: score})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		return scored[i].unitID < scored[j].unitID
+	})
+	if len(scored) > limit {
+		scored = scored[:limit]
+	}
+	out := make([]recallCandidate, 0, len(scored))
+	for i, item := range scored {
 		out = append(out, recallCandidate{
-			key:         recallKey{MemoryID: unitID},
-			lexicalRank: rank,
-			lexicalBM25: float64(rank),
+			key:         recallKey{MemoryID: item.unitID},
+			lexicalRank: i + 1,
+			lexicalBM25: float64(item.score),
 		})
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+func searchTerms(query string) []string {
+	fields := strings.FieldsFunc(strings.ToLower(query), func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsPunct(r)
+	})
+	out := make([]string, 0, len(fields))
+	seen := map[string]struct{}{}
+	for _, field := range fields {
+		if len(field) < 2 {
+			continue
+		}
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		seen[field] = struct{}{}
+		out = append(out, field)
+	}
+	return out
+}
+
+func termMatchScore(terms []string, text string) int {
+	text = strings.ToLower(text)
+	score := 0
+	for _, term := range terms {
+		if strings.Contains(text, term) {
+			score++
+		}
+	}
+	return score
 }
 
 func (s *Service) collectRetrievalVectorCandidates(ctx context.Context, req RecallRequest, limit int) ([]recallCandidate, error) {

@@ -85,6 +85,15 @@ type recallToolRequest struct {
 	Limit             int      `json:"limit,omitempty"`
 }
 
+type contextBuildToolRequest struct {
+	Query           string   `json:"query"`
+	Namespace       string   `json:"namespace,omitempty"`
+	Namespaces      []string `json:"namespaces,omitempty"`
+	ProjectKey      string   `json:"project_key,omitempty"`
+	BranchName      string   `json:"branch_name,omitempty"`
+	LimitPerSection int      `json:"limit_per_section,omitempty"`
+}
+
 type promoteToolRequest struct {
 	ChunkIDs      []string `json:"chunk_ids"`
 	MemoryType    string   `json:"memory_type,omitempty"`
@@ -300,6 +309,22 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "context.build",
+			"description": "build a role-organized context bundle from transcript and memory",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query":             map[string]any{"type": "string"},
+					"namespace":         map[string]any{"type": "string"},
+					"namespaces":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"project_key":       map[string]any{"type": "string"},
+					"branch_name":       map[string]any{"type": "string"},
+					"limit_per_section": map[string]any{"type": "integer"},
+				},
+				"required": []string{"query"},
+			},
+		},
+		{
 			"name":        "memory.promote",
 			"description": "promote transcript chunks into a private structured memory",
 			"inputSchema": map[string]any{
@@ -486,6 +511,19 @@ func callTool(cfg config.Config, params toolCallParams) (any, map[string]any) {
 			return nil, map[string]any{"code": -32602, "message": "query is required"}
 		}
 		payload, err := callAPI(cfg, http.MethodPost, "/v1/memory/recall", nil, args)
+		if err != nil {
+			return nil, rpcErrorFromEnvelope(payload, err)
+		}
+		return toolResultFromEnvelope(payload), nil
+	case "context.build":
+		var args contextBuildToolRequest
+		if err := decodeArguments(params.Arguments, &args); err != nil {
+			return nil, map[string]any{"code": -32602, "message": err.Error()}
+		}
+		if strings.TrimSpace(args.Query) == "" {
+			return nil, map[string]any{"code": -32602, "message": "query is required"}
+		}
+		payload, err := callAPI(cfg, http.MethodPost, "/v1/context/build", nil, args)
 		if err != nil {
 			return nil, rpcErrorFromEnvelope(payload, err)
 		}
