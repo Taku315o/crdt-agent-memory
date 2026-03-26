@@ -95,6 +95,23 @@ smoke-e2e-manual: clean-dev setup-dev-configs migrate-peer-a migrate-peer-b
 		done; \
 		echo "$$p"; \
 	}; \
+	BUILD_DIR="$$(mktemp -d "$(TMP_BASE)/smoke-build.XXXXXX")"; \
+	SMOKE_PIDS=""; \
+	cleanup() { \
+		set +e; \
+		if [ -n "$$SMOKE_PIDS" ]; then \
+			for pid in $$SMOKE_PIDS; do \
+				kill -TERM -- -$$pid >/dev/null 2>&1 || kill -TERM $$pid >/dev/null 2>&1 || true; \
+			done; \
+			for pid in $$SMOKE_PIDS; do \
+				wait $$pid >/dev/null 2>&1 || true; \
+			done; \
+		fi; \
+		rm -rf "$$BUILD_DIR"; \
+	}; \
+	trap cleanup EXIT INT TERM HUP QUIT; \
+	PATH=/opt/homebrew/bin:$$PATH CGO_ENABLED=1 "$(GO_BIN)" build $(GOFLAGS) -o "$$BUILD_DIR/memoryd" ./cmd/memoryd; \
+	PATH=/opt/homebrew/bin:$$PATH CGO_ENABLED=1 "$(GO_BIN)" build $(GOFLAGS) -o "$$BUILD_DIR/syncd" ./cmd/syncd; \
 	API_A_PORT=$$(pick_free_port 4101); \
 	API_B_PORT=$$(pick_free_port $$((API_A_PORT+1))); \
 	SYNC_A_PORT=$$(pick_free_port 4201); \
@@ -107,17 +124,15 @@ smoke-e2e-manual: clean-dev setup-dev-configs migrate-peer-a migrate-peer-b
 	printf 'crdt-agent-memory/peer-a' | shasum -a 256 | awk '{print $$1}' >"$(TMP_BASE)/peer-a/peer.key"; \
 	printf 'crdt-agent-memory/peer-b' | shasum -a 256 | awk '{print $$1}' >"$(TMP_BASE)/peer-b/peer.key"; \
 	chmod 600 "$(TMP_BASE)/peer-a/peer.key" "$(TMP_BASE)/peer-b/peer.key"; \
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/memoryd --config "$(PEER_A_CONFIG)" >"$(TMP_BASE)/logs/memoryd-peer-a.log" 2>&1 & \
+	"$$BUILD_DIR/memoryd" --config "$(PEER_A_CONFIG)" >"$(TMP_BASE)/logs/memoryd-peer-a.log" 2>&1 & \
 	PID_MEM_A=$$!; \
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/memoryd --config "$(PEER_B_CONFIG)" >"$(TMP_BASE)/logs/memoryd-peer-b.log" 2>&1 & \
+	SMOKE_PIDS="$$PID_MEM_A $$SMOKE_PIDS"; \
+	"$$BUILD_DIR/memoryd" --config "$(PEER_B_CONFIG)" >"$(TMP_BASE)/logs/memoryd-peer-b.log" 2>&1 & \
 	PID_MEM_B=$$!; \
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/syncd --config "$(PEER_B_CONFIG)" >"$(TMP_BASE)/logs/syncd-peer-b.log" 2>&1 & \
+	SMOKE_PIDS="$$PID_MEM_B $$SMOKE_PIDS"; \
+	"$$BUILD_DIR/syncd" --config "$(PEER_B_CONFIG)" >"$(TMP_BASE)/logs/syncd-peer-b.log" 2>&1 & \
 	PID_SYNC_B=$$!; \
-	cleanup() { \
-		kill $$PID_SYNC_B $$PID_MEM_B $$PID_MEM_A >/dev/null 2>&1 || true; \
-		wait $$PID_SYNC_B $$PID_MEM_B $$PID_MEM_A >/dev/null 2>&1 || true; \
-	}; \
-	trap cleanup EXIT INT TERM; \
+	SMOKE_PIDS="$$PID_SYNC_B $$SMOKE_PIDS"; \
 	wait_http() { \
 		local url="$$1"; \
 		local attempts=40; \
@@ -130,23 +145,38 @@ smoke-e2e-manual: clean-dev setup-dev-configs migrate-peer-a migrate-peer-b
 			sleep 0.5; \
 		done; \
 	}; \
+	wait_post() { \
+		local url="$$1"; \
+		local body="$$2"; \
+		local attempts=40; \
+		local code; \
+		until code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$$url" -H 'Content-Type: application/json' -d "$$body" 2>/dev/null) && [ "$$code" != "000" ]; do \
+			attempts=$$((attempts-1)); \
+			if [ $$attempts -le 0 ]; then \
+				echo "timeout waiting for $$url"; \
+				return 1; \
+			fi; \
+			sleep 0.5; \
+		done; \
+	}; \
 	wait_http "http://127.0.0.1:$$API_A_PORT/healthz"; \
 	wait_http "http://127.0.0.1:$$API_B_PORT/healthz"; \
+	wait_post "http://127.0.0.1:$$SYNC_B_PORT/v1/sync/handshake" '{}'; \
 	curl -sS -X POST "http://127.0.0.1:$$API_A_PORT/v1/memory/store" \
 		-H 'Content-Type: application/json' \
-		-d '{"visibility":"shared","namespace":"team/dev","subject":"shared","body":"shared fact from peer a","origin_peer_id":"peer-a","author_agent_id":"agent-a"}' >/dev/null; \
+		-d '{"visibility":"shared","namespace":"team/dev","subject":"shared","body":"recall shared fact from peer a","origin_peer_id":"peer-a","author_agent_id":"agent-a"}' >/dev/null; \
 	curl -sS -X POST "http://127.0.0.1:$$API_A_PORT/v1/memory/store" \
 		-H 'Content-Type: application/json' \
 		-d '{"visibility":"private","namespace":"local/dev","subject":"private","body":"private fact from peer a","origin_peer_id":"peer-a","author_agent_id":"agent-a"}' >/dev/null; \
 	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/syncd --config "$(PEER_A_CONFIG)" --once >/dev/null; \
-	RECALL_JSON="$(TMP_BASE)/logs/recall-peer-b.json"; \
+	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/indexd --config "$(PEER_B_CONFIG)" --once >/dev/null; \
 	STATUS_JSON="$(TMP_BASE)/logs/sync-status-peer-b.json"; \
-	curl -sS -X POST "http://127.0.0.1:$$API_B_PORT/v1/memory/recall" \
-		-H 'Content-Type: application/json' \
-		-d '{"query":"peer","include_private":true,"limit":10}' >"$$RECALL_JSON"; \
 	curl -sS "http://127.0.0.1:$$API_B_PORT/v1/sync/status?namespace=team/dev" >"$$STATUS_JSON"; \
-	grep -q 'shared fact from peer a' "$$RECALL_JSON"; \
-	! grep -q 'private fact from peer a' "$$RECALL_JSON"; \
+	SYNC_DB="$(TMP_BASE)/peer-b/agent_memory.sqlite"; \
+	SHARED_COUNT=$$(sqlite3 -cmd 'PRAGMA busy_timeout=5000;' "$$SYNC_DB" "select count(*) from recall_memory_view where body = 'recall shared fact from peer a';" | tail -n 1); \
+	PRIVATE_COUNT=$$(sqlite3 -cmd 'PRAGMA busy_timeout=5000;' "$$SYNC_DB" "select count(*) from recall_memory_view where body = 'private fact from peer a';" | tail -n 1); \
+	[ "$$SHARED_COUNT" -eq 1 ]; \
+	[ "$$PRIVATE_COUNT" -eq 0 ]; \
 	grep -Eq '"state"[[:space:]]*:[[:space:]]*"healthy"' "$$STATUS_JSON"; \
 	grep -Eq '"schema_fenced"[[:space:]]*:[[:space:]]*false' "$$STATUS_JSON"; \
 	grep -Eq '"peer_id"[[:space:]]*:[[:space:]]*"peer-a"' "$$STATUS_JSON"; \
