@@ -3,13 +3,19 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"crdt-agent-memory/internal/config"
 )
@@ -236,6 +242,167 @@ func TestWriteMessageUsesJSONLineFraming(t *testing.T) {
 	}
 	if !strings.HasSuffix(s, "\n") {
 		t.Fatalf("expected trailing newline, got %q", s)
+	}
+}
+
+func TestMemoryMCPSmoke(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping smoke test in short mode")
+	}
+
+	bin := buildMemoryMCPBinary(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin, "--config", filepath.Join(repoRoot(t), "mcp-dev.yaml"))
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stderrBuf bytes.Buffer
+	go func() {
+		_, _ = stderrBuf.ReadFrom(stderr)
+	}()
+
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	send := func(v any) {
+		t.Helper()
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fmt.Fprintf(stdin, "%s\n", raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() map[string]any {
+		t.Helper()
+		line, err := readLine(stdout, 15*time.Second)
+		if err != nil {
+			t.Fatalf("read response: %v\nstderr:\n%s", err, stderrBuf.String())
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(line, &resp); err != nil {
+			t.Fatalf("decode response: %v\nline=%s\nstderr:\n%s", err, string(line), stderrBuf.String())
+		}
+		return resp
+	}
+
+	send(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+		},
+	})
+	resp := read()
+	if got := resp["id"]; got != float64(1) {
+		t.Fatalf("initialize id = %v, want 1", got)
+	}
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("initialize result type = %T", resp["result"])
+	}
+	if got := result["protocolVersion"]; got != "2025-06-18" {
+		t.Fatalf("protocolVersion = %v, want 2025-06-18", got)
+	}
+
+	send(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "notifications/initialized",
+	})
+
+	send(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/list",
+	})
+	resp = read()
+	if got := resp["id"]; got != float64(2) {
+		t.Fatalf("tools/list id = %v, want 2", got)
+	}
+	result, ok = resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("tools/list result type = %T", resp["result"])
+	}
+	tools, ok := result["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools type = %T", result["tools"])
+	}
+	if len(tools) == 0 {
+		t.Fatal("tools/list returned no tools")
+	}
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Clean(filepath.Join(cwd, "..", ".."))
+}
+
+func buildMemoryMCPBinary(t *testing.T) string {
+	t.Helper()
+	root := repoRoot(t)
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		goBin = "/opt/homebrew/bin/go"
+	}
+	if _, err := os.Stat(goBin); err != nil {
+		t.Fatalf("go binary not found at %s: %v", goBin, err)
+	}
+
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "memory-mcp")
+	buildCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(buildCtx, goBin, "build", "-tags", "sqlite_fts5", "-o", binPath, "./cmd/memory-mcp")
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build memory-mcp: %v\n%s", err, string(out))
+	}
+	return binPath
+}
+
+func readLine(r io.Reader, timeout time.Duration) ([]byte, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	type result struct {
+		line []byte
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		reader := bufio.NewReader(r)
+		line, err := reader.ReadBytes('\n')
+		ch <- result{line: line, err: err}
+	}()
+	select {
+	case res := <-ch:
+		return res.line, res.err
+	case <-deadline.C:
+		return nil, fmt.Errorf("timed out after %s", timeout)
 	}
 }
 
