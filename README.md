@@ -307,8 +307,13 @@ make test
 # Or verbose
 go test -tags sqlite_fts5 ./... -v
 
-# Integration smoke test
-make clean-dev setup-dev-configs smoke-sync
+# Integration smoke checks
+make smoke-sync-confirm
+make smoke-recall-confirm
+make smoke-e2e-manual
+
+# Optional one-shot sync smoke
+make smoke-sync
 ```
 
 
