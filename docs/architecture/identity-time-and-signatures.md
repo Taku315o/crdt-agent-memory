@@ -1,7 +1,7 @@
 # Identity, Time, And Signatures
 
-Status: Draft v0.3
-Date: 2026-03-10
+Status: Current reference
+Date: 2026-03-26
 
 ## 1. Purpose
 
@@ -116,4 +116,3 @@ Use time carefully:
 - signature verification succeeds across peers for the same immutable claim
 - lifecycle update does not invalidate original signature semantics
 - clock skew does not break sync convergence
-

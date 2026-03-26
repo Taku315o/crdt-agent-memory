@@ -1,11 +1,12 @@
 # Migration And Compatibility
 
-Status: Draft v0.3
-Date: 2026-03-10
+Status: Current reference
+Date: 2026-03-26
 
 ## 1. Purpose
 
 この文書は、CRR schema の migration、互換性判定、rolling upgrade の安全限界を定義する。
+shared sync lane は current 実装では `http-dev` transport 上で動くが、互換性境界の考え方自体は transport 非依存である。
 
 ## 2. Primary-Source Facts
 

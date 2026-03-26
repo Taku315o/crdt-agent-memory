@@ -1,9 +1,11 @@
 # Testing Strategy
 
-Status: Draft v0.3
-Date: 2026-03-10
+Status: Current reference
+Date: 2026-03-26
 
 ## 1. Testing Goals
+
+現行の回帰対象には transcript ingest, candidate flow, promote/publish, traceability が含まれる。
 
 - data model の意味を守る
 - sync の冪等性と収束性を守る

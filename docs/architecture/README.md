@@ -35,10 +35,6 @@ Date: 2026-03-25
   - 性能・運用・安全性要件
 - [testing-strategy.md](./testing-strategy.md)
   - テスト戦略
-- [technology-decisions.md](./technology-decisions.md)
-  - 技術選定メモ
-- [transport-and-bootstrap.md](./transport-and-bootstrap.md)
-  - transport と bootstrap の方針
 
 ## Historical / Concept Docs
 
