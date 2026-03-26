@@ -50,6 +50,7 @@ setup-dev-configs: bootstrap-dev
 	mkdir -p "$(TMP_BASE)/peer-a" "$(TMP_BASE)/peer-b"
 	cp configs/peer-a.yaml.example "$(PEER_A_CONFIG)"
 	cp configs/peer-b.yaml.example "$(PEER_B_CONFIG)"
+	bash scripts/setup-keys.sh "$(TMP_BASE)"
 
 migrate-peer-a: setup-dev-configs
 	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/memoryd --config "$(PEER_A_CONFIG)" --cmd migrate

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -24,9 +26,33 @@ func main() {
 	var command string
 	var withIndexer bool
 	flag.StringVar(&configPath, "config", "", "path to config yaml")
-	flag.StringVar(&command, "cmd", "serve", "command: migrate|diag|serve")
+	flag.StringVar(&command, "cmd", "serve", "command: migrate|diag|serve|keygen")
 	flag.BoolVar(&withIndexer, "with-indexer", false, "run the index worker in-process")
 	flag.Parse()
+
+	// keygen command doesn't need a config
+	if command == "keygen" {
+		if configPath == "" {
+			log.Fatal("--config is required for keygen")
+		}
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		seed := seedForPeer(cfg.PeerID)
+		signer, err := signing.NewSignerFromSeed(seed)
+		if err != nil {
+			log.Fatal(err)
+		}
+		// Write seed to file
+		seedHex := hex.EncodeToString(seed)
+		if err := os.WriteFile(cfg.SigningKeyPath, []byte(seedHex), 0o600); err != nil {
+			log.Fatal(err)
+		}
+		// Output public key
+		fmt.Println(signer.PublicKeyHex())
+		return
+	}
 
 	if configPath == "" {
 		log.Fatal("--config is required")
@@ -149,4 +175,9 @@ func runScrubberWorker(ctx context.Context, svc *scrubber.Service) {
 		}
 		<-ticker.C
 	}
+}
+
+func seedForPeer(peerID string) []byte {
+	sum := sha256.Sum256([]byte("crdt-agent-memory/" + peerID))
+	return sum[:]
 }
