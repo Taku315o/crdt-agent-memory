@@ -67,22 +67,22 @@ diag-peer-b: setup-dev-configs
 	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/memoryd --config "$(PEER_B_CONFIG)" --cmd diag
 
 serve-peer-a: setup-dev-configs migrate-peer-a
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/memoryd --config "$(PEER_A_CONFIG)"
+	PATH=/opt/homebrew/bin:$$PATH ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS) ./cmd/memoryd --config "$(PEER_A_CONFIG)"
 
 serve-peer-b: setup-dev-configs migrate-peer-b
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/memoryd --config "$(PEER_B_CONFIG)"
+	PATH=/opt/homebrew/bin:$$PATH ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS) ./cmd/memoryd --config "$(PEER_B_CONFIG)"
 
 index-peer-a: setup-dev-configs migrate-peer-a
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/indexd --config "$(PEER_A_CONFIG)"
+	PATH=/opt/homebrew/bin:$$PATH ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS) ./cmd/indexd --config "$(PEER_A_CONFIG)"
 
 index-peer-b: setup-dev-configs migrate-peer-b
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/indexd --config "$(PEER_B_CONFIG)"
+	PATH=/opt/homebrew/bin:$$PATH ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS) ./cmd/indexd --config "$(PEER_B_CONFIG)"
 
 sync-peer-a: setup-dev-configs migrate-peer-a
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/syncd --config "$(PEER_A_CONFIG)"
+	PATH=/opt/homebrew/bin:$$PATH ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS) ./cmd/syncd --config "$(PEER_A_CONFIG)"
 
 sync-peer-b: setup-dev-configs migrate-peer-b
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/syncd --config "$(PEER_B_CONFIG)"
+	PATH=/opt/homebrew/bin:$$PATH ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS) ./cmd/syncd --config "$(PEER_B_CONFIG)"
 
 smoke-sync: migrate-peer-a migrate-peer-b
 	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/syncd --config "$(PEER_A_CONFIG)" --once
