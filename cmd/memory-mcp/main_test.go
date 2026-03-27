@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"crdt-agent-memory/internal/config"
+	"crdt-agent-memory/internal/testenv"
 )
 
 type storeHTTPRequest struct {
@@ -250,11 +251,165 @@ func TestMemoryMCPSmoke(t *testing.T) {
 		t.Skip("skipping smoke test in short mode")
 	}
 
+	handle := startMemoryMCP(t, filepath.Join(repoRoot(t), "mcp-dev.yaml"))
+
+	handle.send(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+		},
+	})
+	resp := handle.read(t)
+	if got := resp["id"]; got != float64(1) {
+		t.Fatalf("initialize id = %v, want 1", got)
+	}
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("initialize result type = %T", resp["result"])
+	}
+	if got := result["protocolVersion"]; got != "2025-06-18" {
+		t.Fatalf("protocolVersion = %v, want 2025-06-18", got)
+	}
+
+	handle.send(t, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "notifications/initialized",
+	})
+
+	handle.send(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/list",
+	})
+	resp = handle.read(t)
+	if got := resp["id"]; got != float64(2) {
+		t.Fatalf("tools/list id = %v, want 2", got)
+	}
+	result, ok = resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("tools/list result type = %T", resp["result"])
+	}
+	tools, ok := result["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools type = %T", result["tools"])
+	}
+	if len(tools) == 0 {
+		t.Fatal("tools/list returned no tools")
+	}
+}
+
+func TestMemoryMCPStoreSmoke(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping smoke test in short mode")
+	}
+
+	var gotMethod string
+	var gotPath string
+	var gotBody storeHTTPRequest
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(apiEnvelope{
+			OK: true,
+			Data: map[string]any{
+				"memory_ref":     map[string]any{"memory_space": "shared", "memory_id": "01HSTORE"},
+				"indexed":        true,
+				"sync_eligible":  true,
+				"source_applied": true,
+			},
+			Warnings:  []string{"stored"},
+			RequestID: "req_store",
+		})
+	}))
+	t.Cleanup(apiServer.Close)
+
+	handle := startMemoryMCP(t, smokeConfigPath(t, apiServer.URL))
+	handle.send(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+		},
+	})
+	resp := handle.read(t)
+	if resp["result"] == nil {
+		t.Fatalf("initialize failed: %#v", resp)
+	}
+
+	handle.send(t, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "notifications/initialized",
+	})
+
+	handle.send(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "memory.store",
+			"arguments": map[string]any{
+				"visibility": "shared",
+				"namespace":  "team/dev",
+				"body":       "stored via smoke test",
+				"subject":    "smoke",
+			},
+		},
+	})
+	resp = handle.read(t)
+	if got := resp["id"]; got != float64(2) {
+		t.Fatalf("tools/call id = %v, want 2", got)
+	}
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("tools/call result type = %T", resp["result"])
+	}
+	sc, ok := result["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent type = %T", result["structuredContent"])
+	}
+	if sc["request_id"] != "req_store" {
+		t.Fatalf("request_id = %v, want req_store", sc["request_id"])
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("api method = %s, want POST", gotMethod)
+	}
+	if gotPath != "/v1/memory/store" {
+		t.Fatalf("api path = %s, want /v1/memory/store", gotPath)
+	}
+	if gotBody.Visibility != "shared" || gotBody.Namespace != "team/dev" || gotBody.Body != "stored via smoke test" {
+		t.Fatalf("api body = %#v", gotBody)
+	}
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Clean(filepath.Join(cwd, "..", ".."))
+}
+
+type memoryMCPHandle struct {
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    io.ReadCloser
+	stderrBuf *bytes.Buffer
+}
+
+func startMemoryMCP(t *testing.T, configPath string) *memoryMCPHandle {
+	t.Helper()
 	bin := buildMemoryMCPBinary(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	t.Cleanup(cancel)
 
-	cmd := exec.CommandContext(ctx, bin, "--config", filepath.Join(repoRoot(t), "mcp-dev.yaml"))
+	cmd := exec.CommandContext(ctx, bin, "--config", configPath)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -278,87 +433,74 @@ func TestMemoryMCPSmoke(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_ = stdin.Close()
-		_ = cmd.Process.Kill()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
 		_ = cmd.Wait()
 	})
 
-	send := func(v any) {
-		t.Helper()
-		raw, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := fmt.Fprintf(stdin, "%s\n", raw); err != nil {
-			t.Fatal(err)
-		}
-	}
-	read := func() map[string]any {
-		t.Helper()
-		line, err := readLine(stdout, 15*time.Second)
-		if err != nil {
-			t.Fatalf("read response: %v\nstderr:\n%s", err, stderrBuf.String())
-		}
-		var resp map[string]any
-		if err := json.Unmarshal(line, &resp); err != nil {
-			t.Fatalf("decode response: %v\nline=%s\nstderr:\n%s", err, string(line), stderrBuf.String())
-		}
-		return resp
-	}
-
-	send(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "initialize",
-		"params": map[string]any{
-			"protocolVersion": "2025-06-18",
-		},
-	})
-	resp := read()
-	if got := resp["id"]; got != float64(1) {
-		t.Fatalf("initialize id = %v, want 1", got)
-	}
-	result, ok := resp["result"].(map[string]any)
-	if !ok {
-		t.Fatalf("initialize result type = %T", resp["result"])
-	}
-	if got := result["protocolVersion"]; got != "2025-06-18" {
-		t.Fatalf("protocolVersion = %v, want 2025-06-18", got)
-	}
-
-	send(map[string]any{
-		"jsonrpc": "2.0",
-		"method":  "notifications/initialized",
-	})
-
-	send(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      2,
-		"method":  "tools/list",
-	})
-	resp = read()
-	if got := resp["id"]; got != float64(2) {
-		t.Fatalf("tools/list id = %v, want 2", got)
-	}
-	result, ok = resp["result"].(map[string]any)
-	if !ok {
-		t.Fatalf("tools/list result type = %T", resp["result"])
-	}
-	tools, ok := result["tools"].([]any)
-	if !ok {
-		t.Fatalf("tools type = %T", result["tools"])
-	}
-	if len(tools) == 0 {
-		t.Fatal("tools/list returned no tools")
+	return &memoryMCPHandle{
+		cmd:       cmd,
+		stdin:     stdin,
+		stdout:    stdout,
+		stderrBuf: &stderrBuf,
 	}
 }
 
-func repoRoot(t *testing.T) string {
+func (h *memoryMCPHandle) send(t *testing.T, v any) {
 	t.Helper()
-	cwd, err := os.Getwd()
+	raw, err := json.Marshal(v)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Clean(filepath.Join(cwd, "..", ".."))
+	if _, err := fmt.Fprintf(h.stdin, "%s\n", raw); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (h *memoryMCPHandle) read(t *testing.T) map[string]any {
+	t.Helper()
+	line, err := readLine(h.stdout, 15*time.Second)
+	if err != nil {
+		t.Fatalf("read response: %v\nstderr:\n%s", err, h.stderrBuf.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(line, &resp); err != nil {
+		t.Fatalf("decode response: %v\nline=%s\nstderr:\n%s", err, string(line), h.stderrBuf.String())
+	}
+	return resp
+}
+
+func smokeConfigPath(t *testing.T, apiBaseURL string) string {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	keyPath := testenv.WriteSeedFile(t, dir, "mcp-dev")
+	content := fmt.Sprintf(`peer_id: "mcp-dev"
+database_path: %q
+signing_key_path: %q
+namespaces:
+  - "test"
+transport:
+  discovery_profile: "http-dev"
+  relay_profile: "none"
+api:
+  listen_addr: "127.0.0.1:3099"
+  base_url: %q
+sync:
+  listen_addr: "127.0.0.1:3199"
+  public_url: "http://127.0.0.1:3199"
+  interval_ms: 3000
+  batch_limit: 256
+  once_timeout_ms: 5000
+extensions:
+  crsqlite_path: %q
+  sqlite_vec_path: %q
+`, filepath.Join(dir, "agent_memory.sqlite"), keyPath, apiBaseURL, testenv.CRSQLitePath(t), testenv.SQLiteVecPath())
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfgPath
 }
 
 func buildMemoryMCPBinary(t *testing.T) string {
