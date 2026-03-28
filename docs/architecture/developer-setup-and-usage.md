@@ -86,6 +86,9 @@ make diag-peer-b
 
 ### Start services
 
+`serve-*` / `index-*` / `sync-*` は cleanup ラッパー経由で起動する。
+Ctrl-C や終了シグナルで止めても、子プロセスをまとめて後始末する。
+
 peer A:
 
 ```bash
