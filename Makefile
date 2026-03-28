@@ -8,6 +8,9 @@ CRSQLITE_DIR := $(TOOLS_DIR)/crsqlite
 SQLITE_VEC_DIR := $(TOOLS_DIR)/sqlite-vec
 PEER_A_CONFIG := $(TMP_BASE)/peer-a/config.yaml
 PEER_B_CONFIG := $(TMP_BASE)/peer-b/config.yaml
+GO_ENV := PATH=/opt/homebrew/bin:$$PATH
+GO_RUN := $(GO_ENV) "$(GO_BIN)" run $(GOFLAGS)
+GO_RUN_CLEANUP := $(GO_ENV) ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS)
 
 .PHONY: help bootstrap-dev check-deps test setup-dev-configs migrate-peer-a migrate-peer-b diag-peer-a diag-peer-b serve-peer-a serve-peer-b index-peer-a index-peer-b sync-peer-a sync-peer-b smoke-sync smoke-sync-confirm smoke-recall-confirm smoke-e2e-manual clean-dev
 
@@ -55,38 +58,38 @@ setup-dev-configs: bootstrap-dev
 	bash scripts/setup-keys.sh "$(TMP_BASE)"
 
 migrate-peer-a: setup-dev-configs
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/memoryd --config "$(PEER_A_CONFIG)" --cmd migrate
+	$(GO_RUN) ./cmd/memoryd --config "$(PEER_A_CONFIG)" --cmd migrate
 
 migrate-peer-b: setup-dev-configs
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/memoryd --config "$(PEER_B_CONFIG)" --cmd migrate
+	$(GO_RUN) ./cmd/memoryd --config "$(PEER_B_CONFIG)" --cmd migrate
 
 diag-peer-a: setup-dev-configs
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/memoryd --config "$(PEER_A_CONFIG)" --cmd diag
+	$(GO_RUN) ./cmd/memoryd --config "$(PEER_A_CONFIG)" --cmd diag
 
 diag-peer-b: setup-dev-configs
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/memoryd --config "$(PEER_B_CONFIG)" --cmd diag
+	$(GO_RUN) ./cmd/memoryd --config "$(PEER_B_CONFIG)" --cmd diag
 
 serve-peer-a: setup-dev-configs migrate-peer-a
-	PATH=/opt/homebrew/bin:$$PATH ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS) ./cmd/memoryd --config "$(PEER_A_CONFIG)"
+	$(GO_RUN_CLEANUP) ./cmd/memoryd --config "$(PEER_A_CONFIG)"
 
 serve-peer-b: setup-dev-configs migrate-peer-b
-	PATH=/opt/homebrew/bin:$$PATH ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS) ./cmd/memoryd --config "$(PEER_B_CONFIG)"
+	$(GO_RUN_CLEANUP) ./cmd/memoryd --config "$(PEER_B_CONFIG)"
 
 index-peer-a: setup-dev-configs migrate-peer-a
-	PATH=/opt/homebrew/bin:$$PATH ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS) ./cmd/indexd --config "$(PEER_A_CONFIG)"
+	$(GO_RUN_CLEANUP) ./cmd/indexd --config "$(PEER_A_CONFIG)"
 
 index-peer-b: setup-dev-configs migrate-peer-b
-	PATH=/opt/homebrew/bin:$$PATH ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS) ./cmd/indexd --config "$(PEER_B_CONFIG)"
+	$(GO_RUN_CLEANUP) ./cmd/indexd --config "$(PEER_B_CONFIG)"
 
 sync-peer-a: setup-dev-configs migrate-peer-a
-	PATH=/opt/homebrew/bin:$$PATH ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS) ./cmd/syncd --config "$(PEER_A_CONFIG)"
+	$(GO_RUN_CLEANUP) ./cmd/syncd --config "$(PEER_A_CONFIG)"
 
 sync-peer-b: setup-dev-configs migrate-peer-b
-	PATH=/opt/homebrew/bin:$$PATH ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS) ./cmd/syncd --config "$(PEER_B_CONFIG)"
+	$(GO_RUN_CLEANUP) ./cmd/syncd --config "$(PEER_B_CONFIG)"
 
 smoke-sync: migrate-peer-a migrate-peer-b
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/syncd --config "$(PEER_A_CONFIG)" --once
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" run $(GOFLAGS) ./cmd/syncd --config "$(PEER_B_CONFIG)" --once
+	$(GO_RUN) ./cmd/syncd --config "$(PEER_A_CONFIG)" --once
+	$(GO_RUN) ./cmd/syncd --config "$(PEER_B_CONFIG)" --once
 
 smoke-sync-confirm:
 	./scripts/smoke-e2e-manual.sh sync
