@@ -146,6 +146,26 @@ curl -X POST http://127.0.0.1:3101/v1/memory/{memory_id}/supersede \
 
 ### Mode A: MCP Adapter (Recommended for Claude Desktop / Cursor)
 
+Fast path for this repo on local macOS/Linux:
+
+```bash
+make install-mcp-clients
+```
+
+This builds `./bin/memory-mcp` and updates:
+
+- `.mcp/config.json`
+- `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or `~/.config/Claude/claude_desktop_config.json` on Linux
+- `~/.codex/config.toml`
+
+If you want to register only one client, run:
+
+```bash
+./scripts/install-client-configs.sh --targets claude
+./scripts/install-client-configs.sh --targets codex
+./scripts/install-client-configs.sh --targets local
+```
+
 Register the MCP server in your Claude config:
 
 ```json

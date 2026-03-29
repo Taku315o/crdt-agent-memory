@@ -12,12 +12,14 @@ GO_ENV := PATH=/opt/homebrew/bin:$$PATH
 GO_RUN := $(GO_ENV) "$(GO_BIN)" run $(GOFLAGS)
 GO_RUN_CLEANUP := $(GO_ENV) ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS)
 
-.PHONY: help bootstrap-dev check-deps test setup-dev-configs migrate-peer-a migrate-peer-b diag-peer-a diag-peer-b serve-peer-a serve-peer-b index-peer-a index-peer-b sync-peer-a sync-peer-b smoke-sync smoke-sync-confirm smoke-recall-confirm smoke-e2e-manual clean-dev
+.PHONY: help bootstrap-dev check-deps build-mcp install-mcp-clients test setup-dev-configs migrate-peer-a migrate-peer-b diag-peer-a diag-peer-b serve-peer-a serve-peer-b index-peer-a index-peer-b sync-peer-a sync-peer-b smoke-sync smoke-sync-confirm smoke-recall-confirm smoke-e2e-manual clean-dev
 
 help:
 	@printf "%s\n" \
 	"make bootstrap-dev     Download cr-sqlite and sqlite-vec into .tools/" \
 	"make check-deps        Verify Go and extension files" \
+	"make build-mcp         Build ./bin/memory-mcp for local MCP clients" \
+	"make install-mcp-clients Build and register MCP config for local, Claude, and Codex" \
 	"make test              Run all Go tests" \
 	"make setup-dev-configs Copy sample configs into $(TMP_BASE)" \
 	"make migrate-peer-a    Run migrations for peer-a" \
@@ -47,6 +49,13 @@ check-deps:
 	test -x "$(GO_BIN)"
 	test -f "$(CRSQLITE_DIR)/crsqlite.dylib"
 	test -f "$(SQLITE_VEC_DIR)/vec0.dylib"
+
+build-mcp: check-deps
+	mkdir -p ./bin
+	PATH=/opt/homebrew/bin:$$PATH CRSQLITE_PATH="$(CRSQLITE_DIR)/crsqlite.dylib" SQLITE_VEC_PATH="$(SQLITE_VEC_DIR)/vec0.dylib" "$(GO_BIN)" build $(GOFLAGS) -o ./bin/memory-mcp ./cmd/memory-mcp
+
+install-mcp-clients: build-mcp
+	./scripts/install-client-configs.sh
 
 test: check-deps
 	PATH=/opt/homebrew/bin:$$PATH CRSQLITE_PATH="$(CRSQLITE_DIR)/crsqlite.dylib" SQLITE_VEC_PATH="$(SQLITE_VEC_DIR)/vec0.dylib" "$(GO_BIN)" test $(GOFLAGS) ./...
