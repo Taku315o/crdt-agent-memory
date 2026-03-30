@@ -143,6 +143,17 @@ func (a *App) Up(ctx context.Context, opts UpOptions) (RuntimeState, error) {
 		}
 		_ = os.Remove(layout.RuntimePath)
 	}
+	withSync := settings.SyncEnabled
+	if opts.WithSync != nil {
+		withSync = *opts.WithSync
+	}
+	addresses := []string{cfg.API.ListenAddr}
+	if withSync {
+		addresses = append(addresses, cfg.Sync.ListenAddr)
+	}
+	if err := ensurePortsAvailable(addresses...); err != nil {
+		return RuntimeState{}, err
+	}
 
 	services := []struct {
 		name string
@@ -150,10 +161,6 @@ func (a *App) Up(ctx context.Context, opts UpOptions) (RuntimeState, error) {
 	}{
 		{name: "memoryd", args: []string{"--config", layout.ConfigPath}},
 		{name: "indexd", args: []string{"--config", layout.ConfigPath}},
-	}
-	withSync := settings.SyncEnabled
-	if opts.WithSync != nil {
-		withSync = *opts.WithSync
 	}
 	if withSync {
 		services = append(services, struct {
