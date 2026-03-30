@@ -33,6 +33,8 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newLogsCommand(app))
 	root.AddCommand(newDoctorCommand(app))
 	root.AddCommand(newMCPCommand(app))
+	root.AddCommand(newPeerCommand(app))
+	root.AddCommand(newSyncCommand(app))
 	return root
 }
 
@@ -212,5 +214,120 @@ func newMCPInstallCommand(app *cam.App) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&client, "client", "local", "target client: local, inspector, claude, or codex")
 	cmd.Flags().BoolVar(&createMissingDirs, "create-missing-dirs", false, "create client config directories if missing")
+	return cmd
+}
+
+func newPeerCommand(app *cam.App) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "peer",
+		Short: "Manage peer registry entries for the profile",
+	}
+	cmd.AddCommand(newPeerListCommand(app))
+	cmd.AddCommand(newPeerAddCommand(app))
+	return cmd
+}
+
+func newPeerListCommand(app *cam.App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List configured peers",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			peers, err := app.PeerList(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if len(peers) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "peers=none")
+				return nil
+			}
+			for _, peer := range peers {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s sync_url=%s namespaces=%v\n", peer.PeerID, peer.SyncURL, peer.NamespaceAllowlist)
+			}
+			return nil
+		},
+	}
+}
+
+func newPeerAddCommand(app *cam.App) *cobra.Command {
+	var peerID string
+	var displayName string
+	var publicKey string
+	var syncURL string
+	var namespaces []string
+	var discoveryProfile string
+	var relayProfile string
+	cmd := &cobra.Command{
+		Use:   "add",
+		Short: "Add or update a peer registry entry",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			entry, err := app.PeerAdd(cmd.Context(), cam.PeerAddOptions{
+				PeerID:             peerID,
+				DisplayName:        displayName,
+				SigningPublicKey:   publicKey,
+				SyncURL:            syncURL,
+				NamespaceAllowlist: namespaces,
+				DiscoveryProfile:   discoveryProfile,
+				RelayProfile:       relayProfile,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "peer=%s sync_url=%s namespaces=%v\n", entry.PeerID, entry.SyncURL, entry.NamespaceAllowlist)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&peerID, "peer-id", "", "peer identifier")
+	cmd.Flags().StringVar(&displayName, "display-name", "", "display name")
+	cmd.Flags().StringVar(&publicKey, "public-key", "", "signing public key hex")
+	cmd.Flags().StringVar(&syncURL, "sync-url", "", "peer sync base URL")
+	cmd.Flags().StringSliceVar(&namespaces, "namespace", nil, "namespace allowlist entry; repeat or pass comma-separated values")
+	cmd.Flags().StringVar(&discoveryProfile, "discovery-profile", "http-dev", "discovery profile")
+	cmd.Flags().StringVar(&relayProfile, "relay-profile", "none", "relay profile")
+	_ = cmd.MarkFlagRequired("peer-id")
+	_ = cmd.MarkFlagRequired("public-key")
+	_ = cmd.MarkFlagRequired("sync-url")
+	return cmd
+}
+
+func newSyncCommand(app *cam.App) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "sync",
+		Short: "Inspect sync status for the profile",
+	}
+	cmd.AddCommand(newSyncStatusCommand(app))
+	return cmd
+}
+
+func newSyncStatusCommand(app *cam.App) *cobra.Command {
+	var namespace string
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show sync status for a namespace via memoryd",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			status, err := app.SyncStatus(cmd.Context(), namespace)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "namespace=%s state=%s schema_fenced=%t\n", status.Namespace, status.State, status.SchemaFenced)
+			for _, peer := range status.Peers {
+				lastError := ""
+				if peer.LastError != nil {
+					lastError = *peer.LastError
+				}
+				fmt.Fprintf(
+					cmd.OutOrStdout(),
+					"%s last_success_at_ms=%d schema_fenced=%t last_transport=%s last_path_type=%s last_error=%s\n",
+					peer.PeerID,
+					peer.LastSuccessAtMS,
+					peer.SchemaFenced,
+					peer.LastTransport,
+					peer.LastPathType,
+					lastError,
+				)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&namespace, "namespace", "", "namespace to inspect; defaults to the first configured namespace")
 	return cmd
 }
