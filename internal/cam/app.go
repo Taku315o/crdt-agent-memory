@@ -32,7 +32,7 @@ type InitResult struct {
 }
 
 type UpOptions struct {
-	WithSync bool
+	WithSync *bool
 }
 
 type ServiceStatus struct {
@@ -48,6 +48,7 @@ type Status struct {
 	ConfigPath   string
 	DatabasePath string
 	StartedAt    string
+	SyncEnabled  bool
 	Services     []ServiceStatus
 }
 
@@ -82,6 +83,13 @@ func (a *App) Init(ctx context.Context) (InitResult, error) {
 	if err != nil {
 		return InitResult{}, err
 	}
+	if _, err := os.Stat(layout.SettingsPath); errors.Is(err, os.ErrNotExist) {
+		if err := saveSettings(layout.SettingsPath, Settings{}); err != nil {
+			return InitResult{}, err
+		}
+	} else if err != nil {
+		return InitResult{}, err
+	}
 	if _, err := os.Stat(cfg.SigningKeyPath); errors.Is(err, os.ErrNotExist) {
 		memorydPath, err := ResolveBinary("memoryd")
 		if err != nil {
@@ -114,6 +122,10 @@ func (a *App) Up(ctx context.Context, opts UpOptions) (RuntimeState, error) {
 	if err != nil {
 		return RuntimeState{}, err
 	}
+	settings, err := loadSettings(layout.SettingsPath)
+	if err != nil {
+		return RuntimeState{}, err
+	}
 	existing, err := LoadRuntime(layout.RuntimePath)
 	if err != nil {
 		return RuntimeState{}, err
@@ -139,7 +151,11 @@ func (a *App) Up(ctx context.Context, opts UpOptions) (RuntimeState, error) {
 		{name: "memoryd", args: []string{"--config", layout.ConfigPath}},
 		{name: "indexd", args: []string{"--config", layout.ConfigPath}},
 	}
-	if opts.WithSync {
+	withSync := settings.SyncEnabled
+	if opts.WithSync != nil {
+		withSync = *opts.WithSync
+	}
+	if withSync {
 		services = append(services, struct {
 			name string
 			args []string
@@ -206,6 +222,11 @@ func (a *App) Status(ctx context.Context) (Status, error) {
 	if cfg.PeerID != "" {
 		status.DatabasePath = cfg.DatabasePath
 	}
+	settings, err := loadSettings(layout.SettingsPath)
+	if err != nil {
+		return Status{}, err
+	}
+	status.SyncEnabled = settings.SyncEnabled
 	state, err := LoadRuntime(layout.RuntimePath)
 	if err != nil {
 		return Status{}, err

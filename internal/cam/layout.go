@@ -10,15 +10,16 @@ import (
 )
 
 type Layout struct {
-	Profile     string
-	ConfigRoot  string
-	DataRoot    string
-	ConfigDir   string
-	DataDir     string
-	LogsDir     string
-	RunDir      string
-	ConfigPath  string
-	RuntimePath string
+	Profile      string
+	ConfigRoot   string
+	DataRoot     string
+	ConfigDir    string
+	DataDir      string
+	LogsDir      string
+	RunDir       string
+	ConfigPath   string
+	SettingsPath string
+	RuntimePath  string
 }
 
 func (l Layout) logPath(service string) string {
@@ -41,15 +42,16 @@ func ResolveLayout(profile string) (Layout, error) {
 	configDir := filepath.Join(configRoot, "cam", "profiles", profile)
 	dataDir := filepath.Join(dataRoot, "cam", "profiles", profile)
 	return Layout{
-		Profile:     profile,
-		ConfigRoot:  configRoot,
-		DataRoot:    dataRoot,
-		ConfigDir:   configDir,
-		DataDir:     dataDir,
-		LogsDir:     filepath.Join(dataDir, "logs"),
-		RunDir:      filepath.Join(dataDir, "run"),
-		ConfigPath:  filepath.Join(configDir, "config.yaml"),
-		RuntimePath: filepath.Join(dataDir, "run", "runtime.json"),
+		Profile:      profile,
+		ConfigRoot:   configRoot,
+		DataRoot:     dataRoot,
+		ConfigDir:    configDir,
+		DataDir:      dataDir,
+		LogsDir:      filepath.Join(dataDir, "logs"),
+		RunDir:       filepath.Join(dataDir, "run"),
+		ConfigPath:   filepath.Join(configDir, "config.yaml"),
+		SettingsPath: filepath.Join(configDir, "settings.json"),
+		RuntimePath:  filepath.Join(dataDir, "run", "runtime.json"),
 	}, nil
 }
 

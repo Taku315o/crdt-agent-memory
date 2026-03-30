@@ -59,7 +59,11 @@ func newUpCommand(app *cam.App) *cobra.Command {
 		Use:   "up",
 		Short: "Start background services for the profile",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts := cam.UpOptions{WithSync: withSync}
+			var withSyncOpt *bool
+			if cmd.Flags().Changed("with-sync") {
+				withSyncOpt = &withSync
+			}
+			opts := cam.UpOptions{WithSync: withSyncOpt}
 			state, err := app.Up(cmd.Context(), opts)
 			if err != nil {
 				return err
@@ -84,7 +88,7 @@ func newStatusCommand(app *cam.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "profile=%s\nconfig=%s\ndb=%s\n", status.Profile, status.ConfigPath, status.DatabasePath)
+			fmt.Fprintf(cmd.OutOrStdout(), "profile=%s\nconfig=%s\ndb=%s\nsync_enabled=%t\n", status.Profile, status.ConfigPath, status.DatabasePath, status.SyncEnabled)
 			if status.StartedAt != "" {
 				if t, err := time.Parse(time.RFC3339, status.StartedAt); err == nil {
 					fmt.Fprintf(cmd.OutOrStdout(), "started_at=%s\n", t.Format(time.RFC3339))
@@ -294,8 +298,40 @@ func newSyncCommand(app *cam.App) *cobra.Command {
 		Use:   "sync",
 		Short: "Inspect sync status for the profile",
 	}
+	cmd.AddCommand(newSyncEnableCommand(app))
+	cmd.AddCommand(newSyncDisableCommand(app))
 	cmd.AddCommand(newSyncStatusCommand(app))
 	return cmd
+}
+
+func newSyncEnableCommand(app *cam.App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "enable",
+		Short: "Enable sync by default for the profile",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			settings, err := app.SetSyncEnabled(cmd.Context(), true)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "sync_enabled=%t\n", settings.SyncEnabled)
+			return nil
+		},
+	}
+}
+
+func newSyncDisableCommand(app *cam.App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "disable",
+		Short: "Disable sync by default for the profile",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			settings, err := app.SetSyncEnabled(cmd.Context(), false)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "sync_enabled=%t\n", settings.SyncEnabled)
+			return nil
+		},
+	}
 }
 
 func newSyncStatusCommand(app *cam.App) *cobra.Command {
@@ -304,6 +340,11 @@ func newSyncStatusCommand(app *cam.App) *cobra.Command {
 		Use:   "status",
 		Short: "Show sync status for a namespace via memoryd",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			settings, err := app.SyncSettings(cmd.Context())
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "sync_enabled=%t\n", settings.SyncEnabled)
 			status, err := app.SyncStatus(cmd.Context(), namespace)
 			if err != nil {
 				return err
