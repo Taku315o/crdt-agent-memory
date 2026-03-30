@@ -101,6 +101,13 @@ Useful follow-up commands:
 ./bin/cam stop
 ```
 
+Shell completion:
+
+```bash
+./bin/cam completion zsh > ~/.zsh/completions/_cam
+./bin/cam completion bash > ~/.local/share/bash-completion/completions/cam
+```
+
 ### Enable Sync And Add A Peer
 
 Single-node local use does not require sync. When you want the profile to start `syncd` by default and track another peer:

@@ -37,6 +37,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newSyncCommand(app))
 	root.AddCommand(newProfileCommand(app))
 	root.AddCommand(newConfigCommand(app))
+	root.AddCommand(newCompletionCommand())
 	return root
 }
 
@@ -509,4 +510,38 @@ func newConfigShowCommand(app *cam.App) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&target, "target", "config", "target file: config or settings")
 	return cmd
+}
+
+func newCompletionCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "completion",
+		Short: "Generate shell completion scripts",
+	}
+	cmd.AddCommand(newCompletionSubcommand("bash"))
+	cmd.AddCommand(newCompletionSubcommand("zsh"))
+	cmd.AddCommand(newCompletionSubcommand("fish"))
+	cmd.AddCommand(newCompletionSubcommand("powershell"))
+	return cmd
+}
+
+func newCompletionSubcommand(shell string) *cobra.Command {
+	return &cobra.Command{
+		Use:   shell,
+		Short: fmt.Sprintf("Generate %s completion script", shell),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root := cmd.Root()
+			switch shell {
+			case "bash":
+				return root.GenBashCompletion(cmd.OutOrStdout())
+			case "zsh":
+				return root.GenZshCompletion(cmd.OutOrStdout())
+			case "fish":
+				return root.GenFishCompletion(cmd.OutOrStdout(), true)
+			case "powershell":
+				return root.GenPowerShellCompletionWithDesc(cmd.OutOrStdout())
+			default:
+				return fmt.Errorf("unsupported shell %q", shell)
+			}
+		},
+	}
 }
