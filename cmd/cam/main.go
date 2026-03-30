@@ -1,0 +1,117 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"time"
+
+	cam "crdt-agent-memory/internal/cam"
+
+	"github.com/spf13/cobra"
+)
+
+func main() {
+	if err := newRootCommand().Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func newRootCommand() *cobra.Command {
+	app := cam.NewApp()
+	root := &cobra.Command{
+		Use:           "cam",
+		Short:         "Manage local CRDT Agent Memory profiles",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	root.PersistentFlags().StringVar(&app.Profile, "profile", "default", "profile name")
+	root.AddCommand(newInitCommand(app))
+	root.AddCommand(newUpCommand(app))
+	root.AddCommand(newStatusCommand(app))
+	root.AddCommand(newStopCommand(app))
+	return root
+}
+
+func newInitCommand(app *cam.App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "init",
+		Short: "Create or repair the local profile",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := app.Init(cmd.Context())
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "profile=%s\nconfig=%s\ndata=%s\napi=%s\nsync=%s\n", result.Profile, result.ConfigPath, result.DataDir, result.APIBaseURL, result.SyncPublicURL)
+			return nil
+		},
+	}
+}
+
+func newUpCommand(app *cam.App) *cobra.Command {
+	var withSync bool
+	cmd := &cobra.Command{
+		Use:   "up",
+		Short: "Start background services for the profile",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts := cam.UpOptions{WithSync: withSync}
+			state, err := app.Up(cmd.Context(), opts)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "profile=%s\n", state.Profile)
+			for _, svc := range state.Services {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s pid=%d log=%s\n", svc.Name, svc.PID, svc.LogPath)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&withSync, "with-sync", false, "start syncd in addition to memoryd and indexd")
+	return cmd
+}
+
+func newStatusCommand(app *cam.App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Show service status for the profile",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			status, err := app.Status(cmd.Context())
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "profile=%s\nconfig=%s\ndb=%s\n", status.Profile, status.ConfigPath, status.DatabasePath)
+			if status.StartedAt != "" {
+				if t, err := time.Parse(time.RFC3339, status.StartedAt); err == nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "started_at=%s\n", t.Format(time.RFC3339))
+				}
+			}
+			if len(status.Services) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "services=stopped")
+				return nil
+			}
+			for _, svc := range status.Services {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s pid=%d running=%t health=%s log=%s\n", svc.Name, svc.PID, svc.Running, svc.Health, svc.LogPath)
+			}
+			return nil
+		},
+	}
+}
+
+func newStopCommand(app *cam.App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop",
+		Short: "Stop background services for the profile",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			stopped, err := app.Stop(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if !stopped {
+				fmt.Fprintf(cmd.OutOrStdout(), "profile=%s already stopped\n", app.Profile)
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "profile=%s stopped\n", app.Profile)
+			return nil
+		},
+	}
+}

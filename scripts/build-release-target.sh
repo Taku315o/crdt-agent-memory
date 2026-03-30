@@ -41,7 +41,7 @@ build_cmd() {
       "./cmd/${cmd_name}"
 }
 
-for cmd in memoryd indexd syncd memory-mcp; do
+for cmd in cam memoryd indexd syncd memory-mcp; do
   build_cmd "$cmd"
 done
 

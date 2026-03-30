@@ -12,12 +12,13 @@ GO_ENV := PATH=/opt/homebrew/bin:$$PATH
 GO_RUN := $(GO_ENV) "$(GO_BIN)" run $(GOFLAGS)
 GO_RUN_CLEANUP := $(GO_ENV) ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS)
 
-.PHONY: help bootstrap-dev check-deps build-mcp setup-mcp install-mcp-clients test setup-dev-configs migrate-peer-a migrate-peer-b diag-peer-a diag-peer-b serve-peer-a serve-peer-b index-peer-a index-peer-b sync-peer-a sync-peer-b smoke-sync smoke-sync-confirm smoke-recall-confirm smoke-e2e-manual clean-dev
+.PHONY: help bootstrap-dev check-deps build-cam build-mcp setup-mcp install-mcp-clients test setup-dev-configs migrate-peer-a migrate-peer-b diag-peer-a diag-peer-b serve-peer-a serve-peer-b index-peer-a index-peer-b sync-peer-a sync-peer-b smoke-sync smoke-sync-confirm smoke-recall-confirm smoke-e2e-manual clean-dev
 
 help:
 	@printf "%s\n" \
 	"make bootstrap-dev     Download cr-sqlite and sqlite-vec into .tools/" \
 	"make check-deps        Verify Go and extension files" \
+	"make build-cam         Build ./bin/cam and bundled service binaries" \
 	"make build-mcp         Build ./bin/memory-mcp for local MCP clients" \
 	"make setup-mcp         Build and register MCP config for local, Claude, and Codex" \
 	"make install-mcp-clients Backward-compatible alias for make setup-mcp" \
@@ -50,6 +51,13 @@ check-deps:
 	test -x "$(GO_BIN)"
 	test -f "$(CRSQLITE_DIR)/crsqlite.dylib"
 	test -f "$(SQLITE_VEC_DIR)/vec0.dylib"
+
+build-cam: check-deps
+	mkdir -p ./bin
+	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" build $(GOFLAGS) -o ./bin/cam ./cmd/cam
+	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" build $(GOFLAGS) -o ./bin/memoryd ./cmd/memoryd
+	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" build $(GOFLAGS) -o ./bin/indexd ./cmd/indexd
+	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" build $(GOFLAGS) -o ./bin/syncd ./cmd/syncd
 
 build-mcp: check-deps
 	mkdir -p ./bin
