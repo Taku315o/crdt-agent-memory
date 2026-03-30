@@ -32,6 +32,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newStopCommand(app))
 	root.AddCommand(newLogsCommand(app))
 	root.AddCommand(newDoctorCommand(app))
+	root.AddCommand(newMCPCommand(app))
 	return root
 }
 
@@ -161,4 +162,55 @@ func newDoctorCommand(app *cam.App) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newMCPCommand(app *cam.App) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "mcp",
+		Short: "Manage MCP client configuration for the profile",
+	}
+	cmd.AddCommand(newMCPPrintConfigCommand(app))
+	cmd.AddCommand(newMCPInstallCommand(app))
+	return cmd
+}
+
+func newMCPPrintConfigCommand(app *cam.App) *cobra.Command {
+	var client string
+	cmd := &cobra.Command{
+		Use:   "print-config",
+		Short: "Print MCP config for a client",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			out, err := app.MCPPrintConfig(cmd.Context(), client)
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), out)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&client, "client", "local", "target client: local, inspector, claude, or codex")
+	return cmd
+}
+
+func newMCPInstallCommand(app *cam.App) *cobra.Command {
+	var client string
+	var createMissingDirs bool
+	cmd := &cobra.Command{
+		Use:   "install",
+		Short: "Install MCP config into a client",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := app.MCPInstall(cmd.Context(), cam.MCPInstallOptions{
+				Client:            client,
+				CreateMissingDirs: createMissingDirs,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "updated %s\n", path)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&client, "client", "local", "target client: local, inspector, claude, or codex")
+	cmd.Flags().BoolVar(&createMissingDirs, "create-missing-dirs", false, "create client config directories if missing")
+	return cmd
 }

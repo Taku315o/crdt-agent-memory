@@ -58,6 +58,7 @@ build-cam: check-deps
 	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" build $(GOFLAGS) -o ./bin/memoryd ./cmd/memoryd
 	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" build $(GOFLAGS) -o ./bin/indexd ./cmd/indexd
 	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" build $(GOFLAGS) -o ./bin/syncd ./cmd/syncd
+	PATH=/opt/homebrew/bin:$$PATH CRSQLITE_PATH="$(CRSQLITE_DIR)/crsqlite.dylib" SQLITE_VEC_PATH="$(SQLITE_VEC_DIR)/vec0.dylib" "$(GO_BIN)" build $(GOFLAGS) -o ./bin/memory-mcp ./cmd/memory-mcp
 
 build-mcp: check-deps
 	mkdir -p ./bin
