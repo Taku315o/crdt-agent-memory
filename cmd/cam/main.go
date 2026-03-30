@@ -36,6 +36,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newPeerCommand(app))
 	root.AddCommand(newSyncCommand(app))
 	root.AddCommand(newProfileCommand(app))
+	root.AddCommand(newConfigCommand(app))
 	return root
 }
 
@@ -465,4 +466,47 @@ func newProfileRemoveCommand(app *cam.App) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newConfigCommand(app *cam.App) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "config",
+		Short: "Inspect profile config files",
+	}
+	cmd.AddCommand(newConfigPathCommand(app))
+	cmd.AddCommand(newConfigShowCommand(app))
+	return cmd
+}
+
+func newConfigPathCommand(app *cam.App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "path",
+		Short: "Show config and settings paths for the profile",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			paths, err := app.ConfigPaths(cmd.Context())
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "config=%s\nsettings=%s\n", paths.ConfigPath, paths.SettingsPath)
+			return nil
+		},
+	}
+}
+
+func newConfigShowCommand(app *cam.App) *cobra.Command {
+	var target string
+	cmd := &cobra.Command{
+		Use:   "show",
+		Short: "Print config.yaml or settings.json for the profile",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			out, err := app.ConfigShow(cmd.Context(), target)
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), out)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&target, "target", "config", "target file: config or settings")
+	return cmd
 }
