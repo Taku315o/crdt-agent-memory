@@ -154,17 +154,19 @@ make install-mcp-clients
 
 This builds `./bin/memory-mcp` and updates:
 
-- `.mcp/config.json`
+- `.mcp/config.json` (gitignored local file)
+- `.mcp/inspector-config.json` (gitignored local file)
 - `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or `~/.config/Claude/claude_desktop_config.json` on Linux
 - `~/.codex/config.toml`
 
 Behavior:
 
-- Existing `.mcp/config.json` entries are merged, not replaced
+- Existing `.mcp/config.json` and `.mcp/inspector-config.json` entries are merged, not replaced
 - Existing files are backed up to `*.bak` before replacement
 - Claude/Codex config directories are skipped with a warning if they do not exist
 - `--create-missing-dirs` opts into creating missing client config directories
 - Codex TOML is validated before it replaces the existing file
+- Shared examples live at `.mcp/config.example.json` and `.mcp/inspector-config.example.json`
 
 If you want to register only one client, run:
 

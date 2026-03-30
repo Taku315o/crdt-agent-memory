@@ -6,6 +6,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVER_NAME="memory-mcp"
 CONFIG_PATH="$ROOT_DIR/mcp-dev.yaml"
 BINARY_PATH="$ROOT_DIR/bin/memory-mcp"
+WRAPPER_PATH="$ROOT_DIR/scripts/memory-mcp-wrapper.sh"
 TARGETS="local,claude,codex"
 CREATE_MISSING_DIRS=0
 GO_BIN="${GO_BIN:-}"
@@ -37,6 +38,7 @@ Options:
   --server-name <name>    MCP server name to register
   --config <path>         Path to config yaml passed to memory-mcp
   --binary <path>         Path to memory-mcp binary
+  --wrapper <path>        Path to inspector wrapper script
   --crsqlite <path>       Path to crsqlite extension
   --sqlite-vec <path>     Path to sqlite-vec extension
   --create-missing-dirs   Create client config directories if missing
@@ -60,6 +62,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --binary)
       BINARY_PATH="${2:?missing value for --binary}"
+      shift 2
+      ;;
+    --wrapper)
+      WRAPPER_PATH="${2:?missing value for --wrapper}"
       shift 2
       ;;
     --crsqlite)
@@ -97,6 +103,11 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   exit 1
 fi
 
+if [[ ! -x "$WRAPPER_PATH" ]]; then
+  printf 'wrapper not found or not executable: %s\n' "$WRAPPER_PATH" >&2
+  exit 1
+fi
+
 if [[ -z "$GO_BIN" ]]; then
   if command -v go >/dev/null 2>&1; then
     GO_BIN="$(command -v go)"
@@ -123,7 +134,7 @@ if [[ ! -f "$SQLITE_VEC_PATH" ]]; then
   exit 1
 fi
 
-export ROOT_DIR SERVER_NAME CONFIG_PATH BINARY_PATH CRSQLITE_PATH SQLITE_VEC_PATH TARGETS CREATE_MISSING_DIRS GO_BIN
+export ROOT_DIR SERVER_NAME CONFIG_PATH BINARY_PATH WRAPPER_PATH CRSQLITE_PATH SQLITE_VEC_PATH TARGETS CREATE_MISSING_DIRS GO_BIN
 
 python3 <<'PY'
 import json
@@ -232,6 +243,7 @@ root_dir = Path(os.environ["ROOT_DIR"]).resolve()
 server_name = os.environ["SERVER_NAME"]
 config_path = str(Path(os.environ["CONFIG_PATH"]).resolve())
 binary_path = str(Path(os.environ["BINARY_PATH"]).resolve())
+wrapper_path = str(Path(os.environ["WRAPPER_PATH"]).resolve())
 crsqlite_path = str(Path(os.environ["CRSQLITE_PATH"]).resolve())
 sqlite_vec_path = str(Path(os.environ["SQLITE_VEC_PATH"]).resolve())
 go_bin = os.environ["GO_BIN"]
@@ -255,6 +267,15 @@ entry = {
     },
 }
 
+inspector_entry = {
+    "command": wrapper_path,
+    "args": ["--config", config_path],
+    "env": {
+        "CRSQLITE_PATH": crsqlite_path,
+        "SQLITE_VEC_PATH": sqlite_vec_path,
+    },
+}
+
 if "local" in targets:
     local_path = root_dir / ".mcp" / "config.json"
     payload = load_json(local_path)
@@ -262,6 +283,13 @@ if "local" in targets:
     mcp_servers[server_name] = entry
     if write_json(local_path, payload, True):
         print(f"updated local MCP config: {local_path}")
+
+    inspector_path = root_dir / ".mcp" / "inspector-config.json"
+    inspector_payload = load_json(inspector_path)
+    inspector_servers = inspector_payload.setdefault("mcpServers", {})
+    inspector_servers[server_name] = inspector_entry
+    if write_json(inspector_path, inspector_payload, True):
+        print(f"updated local MCP inspector config: {inspector_path}")
 
 if "claude" in targets:
     system = platform.system().lower()

@@ -41,3 +41,5 @@ learnt.md
 **/memo.md
 MCP_SETUP.md
 *.bak
+.mcp/config.json
+.mcp/inspector-config.json
