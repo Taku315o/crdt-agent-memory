@@ -88,7 +88,15 @@ func newStatusCommand(app *cam.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "profile=%s\nconfig=%s\ndb=%s\nsync_enabled=%t\n", status.Profile, status.ConfigPath, status.DatabasePath, status.SyncEnabled)
+			fmt.Fprintf(
+				cmd.OutOrStdout(),
+				"profile=%s\nconfig=%s\nsettings=%s\ndb=%s\nsync_enabled=%t\n",
+				status.Profile,
+				status.ConfigPath,
+				status.SettingsPath,
+				status.DatabasePath,
+				status.SyncEnabled,
+			)
 			if status.StartedAt != "" {
 				if t, err := time.Parse(time.RFC3339, status.StartedAt); err == nil {
 					fmt.Fprintf(cmd.OutOrStdout(), "started_at=%s\n", t.Format(time.RFC3339))

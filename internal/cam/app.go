@@ -46,6 +46,7 @@ type ServiceStatus struct {
 type Status struct {
 	Profile      string
 	ConfigPath   string
+	SettingsPath string
 	DatabasePath string
 	StartedAt    string
 	SyncEnabled  bool
@@ -223,8 +224,9 @@ func (a *App) Status(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	status := Status{
-		Profile:    a.Profile,
-		ConfigPath: layout.ConfigPath,
+		Profile:      a.Profile,
+		ConfigPath:   layout.ConfigPath,
+		SettingsPath: layout.SettingsPath,
 	}
 	if cfg.PeerID != "" {
 		status.DatabasePath = cfg.DatabasePath

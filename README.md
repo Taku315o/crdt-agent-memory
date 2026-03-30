@@ -101,6 +101,28 @@ Useful follow-up commands:
 ./bin/cam stop
 ```
 
+### Enable Sync And Add A Peer
+
+Single-node local use does not require sync. When you want the profile to start `syncd` by default and track another peer:
+
+```bash
+./bin/cam sync enable
+./bin/cam peer add \
+  --peer-id peer-b \
+  --public-key 8fb9528d24f03b3f5384808d4708e2f42b7a017fb00d664ca06bd5ed0b4d8d8c \
+  --sync-url http://127.0.0.1:3202 \
+  --namespace local/default
+
+./bin/cam peer list
+./bin/cam sync status --namespace local/default
+```
+
+To stop starting `syncd` by default:
+
+```bash
+./bin/cam sync disable
+```
+
 ### Store and Recall Memory
 
 **Store a fact:**
