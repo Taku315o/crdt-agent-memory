@@ -149,7 +149,7 @@ curl -X POST http://127.0.0.1:3101/v1/memory/{memory_id}/supersede \
 Fast path for this repo on local macOS/Linux:
 
 ```bash
-make install-mcp-clients
+make setup-mcp
 ```
 
 This builds `./bin/memory-mcp` and updates:
@@ -176,6 +176,8 @@ If you want to register only one client, run:
 ./scripts/install-client-configs.sh --targets local
 ./scripts/install-client-configs.sh --create-missing-dirs
 ```
+
+`make install-mcp-clients` is kept as a backward-compatible alias.
 
 Register the MCP server in your Claude config:
 
