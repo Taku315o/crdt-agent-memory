@@ -30,6 +30,7 @@ tmp/
 .env
 .env.local
 configs/local/
+mcp-dev.yaml
 
 # Private local documentation
 LOCAL_SETUP_AND_TEST.md
