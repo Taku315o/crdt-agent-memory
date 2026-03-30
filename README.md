@@ -158,12 +158,21 @@ This builds `./bin/memory-mcp` and updates:
 - `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or `~/.config/Claude/claude_desktop_config.json` on Linux
 - `~/.codex/config.toml`
 
+Behavior:
+
+- Existing `.mcp/config.json` entries are merged, not replaced
+- Existing files are backed up to `*.bak` before replacement
+- Claude/Codex config directories are skipped with a warning if they do not exist
+- `--create-missing-dirs` opts into creating missing client config directories
+- Codex TOML is validated before it replaces the existing file
+
 If you want to register only one client, run:
 
 ```bash
 ./scripts/install-client-configs.sh --targets claude
 ./scripts/install-client-configs.sh --targets codex
 ./scripts/install-client-configs.sh --targets local
+./scripts/install-client-configs.sh --create-missing-dirs
 ```
 
 Register the MCP server in your Claude config:

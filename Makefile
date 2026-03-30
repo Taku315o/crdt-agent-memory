@@ -55,7 +55,7 @@ build-mcp: check-deps
 	PATH=/opt/homebrew/bin:$$PATH CRSQLITE_PATH="$(CRSQLITE_DIR)/crsqlite.dylib" SQLITE_VEC_PATH="$(SQLITE_VEC_DIR)/vec0.dylib" "$(GO_BIN)" build $(GOFLAGS) -o ./bin/memory-mcp ./cmd/memory-mcp
 
 install-mcp-clients: build-mcp
-	./scripts/install-client-configs.sh
+	GO_BIN="$(GO_BIN)" ./scripts/install-client-configs.sh
 
 test: check-deps
 	PATH=/opt/homebrew/bin:$$PATH CRSQLITE_PATH="$(CRSQLITE_DIR)/crsqlite.dylib" SQLITE_VEC_PATH="$(SQLITE_VEC_DIR)/vec0.dylib" "$(GO_BIN)" test $(GOFLAGS) ./...
