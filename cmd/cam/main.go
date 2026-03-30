@@ -30,6 +30,8 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newUpCommand(app))
 	root.AddCommand(newStatusCommand(app))
 	root.AddCommand(newStopCommand(app))
+	root.AddCommand(newLogsCommand(app))
+	root.AddCommand(newDoctorCommand(app))
 	return root
 }
 
@@ -111,6 +113,51 @@ func newStopCommand(app *cam.App) *cobra.Command {
 				return nil
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "profile=%s stopped\n", app.Profile)
+			return nil
+		},
+	}
+}
+
+func newLogsCommand(app *cam.App) *cobra.Command {
+	var service string
+	var tail int
+	var follow bool
+	cmd := &cobra.Command{
+		Use:   "logs",
+		Short: "Show profile logs",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.Logs(cmd.Context(), cmd.OutOrStdout(), cam.LogOptions{
+				Service: service,
+				Tail:    tail,
+				Follow:  follow,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&service, "service", "", "service name: memoryd, indexd, or syncd")
+	cmd.Flags().IntVar(&tail, "tail", 40, "number of lines to show")
+	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "follow appended log output")
+	return cmd
+}
+
+func newDoctorCommand(app *cam.App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor",
+		Short: "Run profile diagnostics",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			report, err := app.Doctor(cmd.Context())
+			if err != nil {
+				return err
+			}
+			for _, check := range report.Checks {
+				fmt.Fprintf(cmd.OutOrStdout(), "%-18s %s", check.Name, check.Status)
+				if check.Detail != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), " %s", check.Detail)
+				}
+				fmt.Fprintln(cmd.OutOrStdout())
+			}
+			if !report.OK {
+				return fmt.Errorf("doctor found %d failing checks", report.Failures)
+			}
 			return nil
 		},
 	}

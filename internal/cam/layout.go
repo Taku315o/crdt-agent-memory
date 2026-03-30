@@ -21,6 +21,10 @@ type Layout struct {
 	RuntimePath string
 }
 
+func (l Layout) logPath(service string) string {
+	return filepath.Join(l.LogsDir, service+".log")
+}
+
 func ResolveLayout(profile string) (Layout, error) {
 	profile = strings.TrimSpace(profile)
 	if profile == "" {
