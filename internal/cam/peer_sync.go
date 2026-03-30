@@ -85,6 +85,37 @@ func (a *App) PeerAdd(ctx context.Context, opts PeerAddOptions) (config.PeerRegi
 	return entry, nil
 }
 
+func (a *App) PeerRemove(ctx context.Context, peerID string) (bool, error) {
+	layout, err := ResolveLayout(a.Profile)
+	if err != nil {
+		return false, err
+	}
+	if _, err := a.Init(ctx); err != nil {
+		return false, err
+	}
+	cfg, err := loadConfig(layout.ConfigPath)
+	if err != nil {
+		return false, err
+	}
+	filtered := make([]config.PeerRegistryEntry, 0, len(cfg.PeerRegistry))
+	removed := false
+	for _, entry := range cfg.PeerRegistry {
+		if entry.PeerID == strings.TrimSpace(peerID) {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	if !removed {
+		return false, nil
+	}
+	cfg.PeerRegistry = filtered
+	if err := saveConfig(layout.ConfigPath, cfg); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (a *App) SyncStatus(ctx context.Context, namespace string) (api.SyncStatusResponse, error) {
 	layout, err := ResolveLayout(a.Profile)
 	if err != nil {

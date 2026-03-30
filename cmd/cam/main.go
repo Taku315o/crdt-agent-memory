@@ -35,6 +35,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newMCPCommand(app))
 	root.AddCommand(newPeerCommand(app))
 	root.AddCommand(newSyncCommand(app))
+	root.AddCommand(newProfileCommand(app))
 	return root
 }
 
@@ -236,6 +237,7 @@ func newPeerCommand(app *cam.App) *cobra.Command {
 	}
 	cmd.AddCommand(newPeerListCommand(app))
 	cmd.AddCommand(newPeerAddCommand(app))
+	cmd.AddCommand(newPeerRemoveCommand(app))
 	return cmd
 }
 
@@ -298,6 +300,29 @@ func newPeerAddCommand(app *cam.App) *cobra.Command {
 	_ = cmd.MarkFlagRequired("peer-id")
 	_ = cmd.MarkFlagRequired("public-key")
 	_ = cmd.MarkFlagRequired("sync-url")
+	return cmd
+}
+
+func newPeerRemoveCommand(app *cam.App) *cobra.Command {
+	var peerID string
+	cmd := &cobra.Command{
+		Use:   "remove",
+		Short: "Remove a peer registry entry",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			removed, err := app.PeerRemove(cmd.Context(), peerID)
+			if err != nil {
+				return err
+			}
+			if !removed {
+				fmt.Fprintf(cmd.OutOrStdout(), "peer=%s not found\n", peerID)
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "peer=%s removed\n", peerID)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&peerID, "peer-id", "", "peer identifier")
+	_ = cmd.MarkFlagRequired("peer-id")
 	return cmd
 }
 
@@ -379,4 +404,65 @@ func newSyncStatusCommand(app *cam.App) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&namespace, "namespace", "", "namespace to inspect; defaults to the first configured namespace")
 	return cmd
+}
+
+func newProfileCommand(app *cam.App) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "profile",
+		Short: "Manage local profiles",
+	}
+	cmd.AddCommand(newProfileListCommand(app))
+	cmd.AddCommand(newProfileCreateCommand(app))
+	cmd.AddCommand(newProfileRemoveCommand(app))
+	return cmd
+}
+
+func newProfileListCommand(app *cam.App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List available profiles",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			profiles, err := app.ProfileList(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if len(profiles) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "profiles=none")
+				return nil
+			}
+			for _, profile := range profiles {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s config=%s settings=%s data=%s\n", profile.Name, profile.ConfigPath, profile.SettingsPath, profile.DataDir)
+			}
+			return nil
+		},
+	}
+}
+
+func newProfileCreateCommand(app *cam.App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "create",
+		Short: "Create the selected profile",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := app.ProfileCreate(cmd.Context())
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "profile=%s\nconfig=%s\ndata=%s\n", result.Profile, result.ConfigPath, result.DataDir)
+			return nil
+		},
+	}
+}
+
+func newProfileRemoveCommand(app *cam.App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "remove",
+		Short: "Remove the selected profile",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := app.ProfileRemove(cmd.Context()); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "profile=%s removed\n", app.Profile)
+			return nil
+		},
+	}
 }
