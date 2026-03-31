@@ -25,11 +25,27 @@ update_signing_public_key() {
   mv "$tmp_path" "$config_path"
 }
 
-PUBKEY_A=$("$GO_BIN" run $GOFLAGS ./cmd/memoryd --config "$PEER_A_CONFIG" --cmd keygen 2>/dev/null)
+generate_public_key() {
+  local config_path="$1"
+  local public_key
+  if ! public_key=$("$GO_BIN" run $GOFLAGS ./cmd/memoryd --config "$config_path" --cmd keygen); then
+    printf 'failed to generate public key for %s\n' "$config_path" >&2
+    return 1
+  fi
+  public_key="${public_key//$'\n'/}"
+  public_key="${public_key//$'\r'/}"
+  if [[ -z "$public_key" ]]; then
+    printf 'empty public key returned for %s\n' "$config_path" >&2
+    return 1
+  fi
+  printf '%s\n' "$public_key"
+}
+
+PUBKEY_A="$(generate_public_key "$PEER_A_CONFIG")"
 echo "Peer-A public key: $PUBKEY_A"
 update_signing_public_key "$PEER_A_CONFIG" "$PUBKEY_A"
 
-PUBKEY_B=$("$GO_BIN" run $GOFLAGS ./cmd/memoryd --config "$PEER_B_CONFIG" --cmd keygen 2>/dev/null)
+PUBKEY_B="$(generate_public_key "$PEER_B_CONFIG")"
 echo "Peer-B public key: $PUBKEY_B"
 update_signing_public_key "$PEER_B_CONFIG" "$PUBKEY_B"
 
