@@ -285,7 +285,7 @@ func fetchIndexableUnit(ctx context.Context, tx *sql.Tx, unitID string) (retriev
 }
 
 func upsertRetrievalEmbedding(ctx context.Context, tx *sql.Tx, vecEnabled bool, record retrievalRecord) error {
-	vector, err := embedding.FromText(ctx, record.body)
+	vector, err := embedding.FromDocument(ctx, record.body)
 	if err != nil {
 		return err
 	}
@@ -384,7 +384,7 @@ func fetchBody(ctx context.Context, tx *sql.Tx, memorySpace, memoryID string) (i
 }
 
 func upsertEmbedding(ctx context.Context, tx *sql.Tx, vecEnabled bool, memorySpace, memoryID, namespace, body string) error {
-	vector, err := embedding.FromText(ctx, body)
+	vector, err := embedding.FromDocument(ctx, body)
 	if err != nil {
 		return err
 	}

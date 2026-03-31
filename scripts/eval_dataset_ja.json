@@ -1,0 +1,67 @@
+{
+  "documents": [
+    {
+      "id": "mem_trigram",
+      "kind": "memory",
+      "visibility": "shared",
+      "namespace": "team/ja",
+      "memory_type": "decision",
+      "subject": "日本語検索設計",
+      "body": "日本語検索では trigram とベクトル検索を組み合わせる。"
+    },
+    {
+      "id": "mem_ruri",
+      "kind": "memory",
+      "visibility": "private",
+      "namespace": "team/ja",
+      "memory_type": "fact",
+      "subject": "Ruri 埋め込み",
+      "body": "Ruri v3 をローカル API として接続して日本語の意味検索精度を上げる。"
+    },
+    {
+      "id": "mem_warning",
+      "kind": "memory",
+      "visibility": "shared",
+      "namespace": "team/ja",
+      "memory_type": "note",
+      "subject": "フォールバック方針",
+      "body": "埋め込みが失敗したら lexical-only で recall を継続する。"
+    },
+    {
+      "id": "session_wall",
+      "kind": "transcript",
+      "namespace": "team/ja",
+      "session_id": "session-wall",
+      "messages": [
+        {
+          "seq": 1,
+          "role": "user",
+          "content": "壁打ちの質を上げたい"
+        },
+        {
+          "seq": 2,
+          "role": "assistant",
+          "content": "日本語環境では transcript も検索対象に入れるべきです"
+        }
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "query": "日本語検索の最適化",
+      "expected_ids": ["mem_trigram"]
+    },
+    {
+      "query": "Ruri を使った意味検索",
+      "expected_ids": ["mem_ruri"]
+    },
+    {
+      "query": "embedding が落ちた時の挙動",
+      "expected_ids": ["mem_warning"]
+    },
+    {
+      "query": "壁打ちの質を上げたい",
+      "expected_ids": ["session_wall"]
+    }
+  ]
+}

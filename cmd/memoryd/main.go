@@ -2,15 +2,20 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"crdt-agent-memory/internal/api"
 	"crdt-agent-memory/internal/config"
+	"crdt-agent-memory/internal/embedding"
 	"crdt-agent-memory/internal/indexer"
 	"crdt-agent-memory/internal/memsync"
 	"crdt-agent-memory/internal/policy"
@@ -23,10 +28,42 @@ func main() {
 	var configPath string
 	var command string
 	var withIndexer bool
+	var insecureDeterministicKeygen bool
 	flag.StringVar(&configPath, "config", "", "path to config yaml")
-	flag.StringVar(&command, "cmd", "serve", "command: migrate|diag|serve")
+	flag.StringVar(&command, "cmd", "serve", "command: migrate|diag|serve|keygen")
 	flag.BoolVar(&withIndexer, "with-indexer", false, "run the index worker in-process")
+	flag.BoolVar(&insecureDeterministicKeygen, "insecure-deterministic-keygen", false, "derive the keygen seed from peer_id instead of generating a random seed")
 	flag.Parse()
+
+	// keygen command doesn't need a config
+	if command == "keygen" {
+		if configPath == "" {
+			log.Fatal("--config is required for keygen")
+		}
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		seed, err := keygenSeed(cfg.PeerID, insecureDeterministicKeygen)
+		if err != nil {
+			log.Fatal(err)
+		}
+		signer, err := signing.NewSignerFromSeed(seed)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(cfg.SigningKeyPath), 0o750); err != nil {
+			log.Fatal(err)
+		}
+		// Write seed to file
+		seedHex := hex.EncodeToString(seed)
+		if err := os.WriteFile(cfg.SigningKeyPath, []byte(seedHex), 0o600); err != nil {
+			log.Fatal(err)
+		}
+		// Output public key
+		fmt.Println(signer.PublicKeyHex())
+		return
+	}
 
 	if configPath == "" {
 		log.Fatal("--config is required")
@@ -35,6 +72,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	embedding.Configure(cfg.Embedding)
 	ctx := context.Background()
 	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
 		Path:          cfg.DatabasePath,
@@ -48,7 +86,12 @@ func main() {
 
 	switch command {
 	case "migrate":
-		meta, err := storage.RunMigrations(ctx, db)
+		meta, err := storage.RunMigrationsWithOptions(ctx, db, storage.MigrationOptions{
+			SearchProfile:  cfg.Search.Profile,
+			RankingProfile: cfg.Search.RankingProfile,
+			FTSTokenizer:   cfg.Search.FTSTokenizer,
+			EmbeddingDim:   cfg.Embedding.Dimension,
+		})
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -80,7 +123,12 @@ func main() {
 			summary.ScrubberSummary.OrphanSignals,
 		)
 	case "serve":
-		meta, err := storage.RunMigrations(ctx, db)
+		meta, err := storage.RunMigrationsWithOptions(ctx, db, storage.MigrationOptions{
+			SearchProfile:  cfg.Search.Profile,
+			RankingProfile: cfg.Search.RankingProfile,
+			FTSTokenizer:   cfg.Search.FTSTokenizer,
+			EmbeddingDim:   cfg.Embedding.Dimension,
+		})
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -149,4 +197,20 @@ func runScrubberWorker(ctx context.Context, svc *scrubber.Service) {
 		}
 		<-ticker.C
 	}
+}
+
+func seedForPeer(peerID string) []byte {
+	sum := sha256.Sum256([]byte("crdt-agent-memory/" + peerID))
+	return sum[:]
+}
+
+func keygenSeed(peerID string, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return seedForPeer(peerID), nil
+	}
+	seed := make([]byte, 32)
+	if _, err := rand.Read(seed); err != nil {
+		return nil, fmt.Errorf("generate random signing seed: %w", err)
+	}
+	return seed, nil
 }

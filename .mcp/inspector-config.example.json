@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "memory-mcp": {
+      "command": "/absolute/path/to/project/scripts/memory-mcp-wrapper.sh",
+      "args": [
+        "--config",
+        "/absolute/path/to/project/mcp-dev.yaml"
+      ],
+      "env": {
+        "CRSQLITE_PATH": "/absolute/path/to/project/.tools/crsqlite/crsqlite.dylib",
+        "SQLITE_VEC_PATH": "/absolute/path/to/project/.tools/sqlite-vec/vec0.dylib"
+      }
+    }
+  }
+}

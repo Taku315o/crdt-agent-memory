@@ -66,46 +66,79 @@ A distributed, local-first memory system for AI agents with transcript ingest, s
 - Go 1.23+
 - macOS / Linux / Windows
 
-### Setup (30 seconds)
+### Setup
 
 ```bash
 git clone https://github.com/taku315o/crdt-agent-memory.git
 cd crdt-agent-memory
 
-# Bootstrap dev tools (cr-sqlite, sqlite-vec)
-make bootstrap-dev
-
-# Setup local peer configs
-make setup-dev-configs
-
-# Create and migrate local databases
-make migrate-peer-a migrate-peer-b
+# Build cam plus bundled service binaries
+make build-cam
 ```
 
-### Start the System
+### Start a Local Profile
 
-In three terminals:
+`cam` is the preferred entrypoint for single-node local use.
 
 ```bash
-# Terminal 1: Memory service (API server)
-make serve-peer-a
+# Create the default profile under XDG/OS-standard paths
+./bin/cam init
 
-# Terminal 2: Sync daemon (P2P sync)
-make sync-peer-a
+# Start memoryd + indexd in the background
+./bin/cam up
 
-# Terminal 3: Index worker (search indexing)
-make index-peer-a
+# Check health and runtime status
+./bin/cam status
+
+# Run diagnostics
+./bin/cam doctor
+```
+
+Useful follow-up commands:
+
+```bash
+./bin/cam logs --service memoryd
+./bin/cam stop
+```
+
+Shell completion:
+
+```bash
+./bin/cam completion zsh > ~/.zsh/completions/_cam
+./bin/cam completion bash > ~/.local/share/bash-completion/completions/cam
+```
+
+### Enable Sync And Add A Peer
+
+Single-node local use does not require sync. When you want the profile to start `syncd` by default and track another peer:
+
+```bash
+./bin/cam sync enable
+./bin/cam peer add \
+  --peer-id peer-b \
+  --public-key 8fb9528d24f03b3f5384808d4708e2f42b7a017fb00d664ca06bd5ed0b4d8d8c \
+  --sync-url http://127.0.0.1:3202 \
+  --namespace local/default
+
+./bin/cam peer list
+./bin/cam sync status --namespace local/default
+```
+
+To stop starting `syncd` by default:
+
+```bash
+./bin/cam sync disable
 ```
 
 ### Store and Recall Memory
 
 **Store a fact:**
 ```bash
-curl -X POST http://127.0.0.1:3101/v1/memory/store \
+curl -X POST http://127.0.0.1:35894/v1/memory/store \
   -H 'Content-Type: application/json' \
   -d '{
-    "visibility": "shared",
-    "namespace": "team/dev",
+    "visibility": "private",
+    "namespace": "local/default",
     "subject": "Architecture decision",
     "body": "We chose Iroh for P2P because of NAT traversal",
     "source_uri": "https://iroh.computer"
@@ -114,21 +147,21 @@ curl -X POST http://127.0.0.1:3101/v1/memory/store \
 
 **Recall memories:**
 ```bash
-curl -X POST http://127.0.0.1:3101/v1/memory/recall \
+curl -X POST http://127.0.0.1:35894/v1/memory/recall \
   -H 'Content-Type: application/json' \
   -d '{
     "query": "P2P transport",
-    "namespace": "team/dev"
+    "namespace": "local/default"
   }'
 ```
 
 **Build an agent-ready context bundle:**
 ```bash
-curl -X POST http://127.0.0.1:3101/v1/context/build \
+curl -X POST http://127.0.0.1:35894/v1/context/build \
   -H 'Content-Type: application/json' \
   -d '{
     "query": "why raw transcript is not synchronized",
-    "namespace": "team/dev",
+    "namespace": "local/default",
     "limit_per_section": 4
   }'
 ```
@@ -146,21 +179,28 @@ curl -X POST http://127.0.0.1:3101/v1/memory/{memory_id}/supersede \
 
 ### Mode A: MCP Adapter (Recommended for Claude Desktop / Cursor)
 
-Register the MCP server in your Claude config:
+After `./bin/cam init`, generate or install MCP config from the active profile:
 
-```json
-{
-  "mcpServers": {
-    "memory": {
-      "command": "crdt-agent-memory",
-      "args": ["mcp"],
-      "env": {
-        "CONFIG_PATH": "/path/to/config.yaml"
-      }
-    }
-  }
-}
+```bash
+./bin/cam mcp print-config --client local
+./bin/cam mcp install --client local --create-missing-dirs
+./bin/cam mcp install --client codex --create-missing-dirs
+./bin/cam mcp install --client claude --create-missing-dirs
 ```
+
+Supported targets:
+
+- `.mcp/config.json` (gitignored local file)
+- `.mcp/inspector-config.json` (gitignored local file)
+- `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or `~/.config/Claude/claude_desktop_config.json` on Linux
+- `~/.codex/config.toml`
+
+Behavior:
+
+- Existing JSON entries are merged, not replaced
+- Existing files are backed up to `*.bak`
+- `--create-missing-dirs` opts into creating missing client config directories
+- Codex TOML is validated before replacement
 
 Then in Claude, use tools like `memory.store`, `memory.recall`, `context.build`, `memory.promote`, and `memory.publish` naturally.
 
@@ -172,19 +212,21 @@ Any language can call the HTTP API:
 import requests
 
 # Store
-resp = requests.post("http://127.0.0.1:3101/v1/memory/store", json={
-    "visibility": "shared",
-    "namespace": "team/dev",
+resp = requests.post("http://127.0.0.1:35894/v1/memory/store", json={
+    "visibility": "private",
+    "namespace": "local/default",
     "subject": "learned fact",
     "body": "..."
 })
 
 # Recall
-resp = requests.post("http://127.0.0.1:3101/v1/memory/recall", json={
+resp = requests.post("http://127.0.0.1:35894/v1/memory/recall", json={
     "query": "what do we know about X?",
-    "namespace": "team/dev"
+    "namespace": "local/default"
 })
 ```
+
+`cam init` chooses a stable port per profile and writes it into the profile config. `cam status` and `cam doctor` show the active base URL.
 
 ### Mode C: gRPC (For Backend Services)
 
@@ -307,8 +349,13 @@ make test
 # Or verbose
 go test -tags sqlite_fts5 ./... -v
 
-# Integration smoke test
-make clean-dev setup-dev-configs smoke-sync
+# Integration smoke checks
+make smoke-sync-confirm
+make smoke-recall-confirm
+make smoke-e2e-manual
+
+# Optional one-shot sync smoke
+make smoke-sync
 ```
 
 

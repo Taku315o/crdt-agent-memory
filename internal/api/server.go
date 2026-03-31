@@ -90,7 +90,7 @@ func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
 		MemoryRef:    MemoryRefFromVisibility(req.Visibility, id),
 		Indexed:      false,
 		SyncEligible: req.Visibility == memory.VisibilityShared,
-	})
+	}, nil)
 }
 
 func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +112,7 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 {
 		limit = req.TopK
 	}
-	results, err := s.Memory.Recall(r.Context(), memory.RecallRequest{
+	results, err := s.Memory.RecallDetailed(r.Context(), memory.RecallRequest{
 		Query:             req.Query,
 		Namespaces:        namespaces,
 		IncludePrivate:    req.IncludePrivate,
@@ -128,11 +128,11 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		s.writeMemoryError(w, requestID, err)
 		return
 	}
-	items := make([]RecallItem, 0, len(results))
-	for _, item := range results {
+	items := make([]RecallItem, 0, len(results.Items))
+	for _, item := range results.Items {
 		items = append(items, RecallItemFromResult(item))
 	}
-	s.writeOK(w, requestID, RecallResponse{Items: items})
+	s.writeOK(w, requestID, RecallResponse{Items: items}, results.Warnings)
 }
 
 func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +151,7 @@ func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 		s.writeMemoryError(w, requestID, err)
 		return
 	}
-	s.writeOK(w, requestID, PromoteResponse{PrivateMemoryID: id})
+	s.writeOK(w, requestID, PromoteResponse{PrivateMemoryID: id}, nil)
 }
 
 func (s *Server) handleListCandidates(w http.ResponseWriter, r *http.Request) {
@@ -180,7 +180,7 @@ func (s *Server) handleListCandidates(w http.ResponseWriter, r *http.Request) {
 		s.writeMemoryError(w, requestID, err)
 		return
 	}
-	s.writeOK(w, requestID, ListCandidatesResponse{Items: items})
+	s.writeOK(w, requestID, ListCandidatesResponse{Items: items}, nil)
 }
 
 func (s *Server) handleApproveCandidate(w http.ResponseWriter, r *http.Request) {
@@ -199,7 +199,7 @@ func (s *Server) handleApproveCandidate(w http.ResponseWriter, r *http.Request) 
 		s.writeMemoryError(w, requestID, err)
 		return
 	}
-	s.writeOK(w, requestID, ApproveCandidateResponse{PrivateMemoryID: id})
+	s.writeOK(w, requestID, ApproveCandidateResponse{PrivateMemoryID: id}, nil)
 }
 
 func (s *Server) handleRejectCandidate(w http.ResponseWriter, r *http.Request) {
@@ -217,7 +217,7 @@ func (s *Server) handleRejectCandidate(w http.ResponseWriter, r *http.Request) {
 		s.writeMemoryError(w, requestID, err)
 		return
 	}
-	s.writeOK(w, requestID, RejectCandidateResponse{Status: "rejected"})
+	s.writeOK(w, requestID, RejectCandidateResponse{Status: "rejected"}, nil)
 }
 
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +236,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		s.writeMemoryError(w, requestID, err)
 		return
 	}
-	s.writeOK(w, requestID, PublishResponse{SharedMemoryID: id})
+	s.writeOK(w, requestID, PublishResponse{SharedMemoryID: id}, nil)
 }
 
 func (s *Server) handleSupersede(w http.ResponseWriter, r *http.Request) {
@@ -272,7 +272,7 @@ func (s *Server) handleSupersede(w http.ResponseWriter, r *http.Request) {
 		OldMemoryRef:   MemoryRef{MemorySpace: "shared", MemoryID: oldID},
 		NewMemoryRef:   MemoryRef{MemorySpace: "shared", MemoryID: id},
 		LifecycleState: "superseded",
-	})
+	}, nil)
 }
 
 func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
@@ -295,7 +295,7 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 		s.writeMemoryError(w, requestID, err)
 		return
 	}
-	s.writeOK(w, requestID, SignalResponse{SignalID: signalID})
+	s.writeOK(w, requestID, SignalResponse{SignalID: signalID}, nil)
 }
 
 func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
@@ -318,7 +318,7 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 		s.writeMemoryError(w, requestID, err)
 		return
 	}
-	s.writeOK(w, requestID, ExplainResponseFromResult(result))
+	s.writeOK(w, requestID, ExplainResponseFromResult(result), nil)
 }
 
 func (s *Server) handleTraceDecision(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +341,7 @@ func (s *Server) handleTraceDecision(w http.ResponseWriter, r *http.Request) {
 		s.writeMemoryError(w, requestID, err)
 		return
 	}
-	s.writeOK(w, requestID, TraceDecisionResponseFromResult(result))
+	s.writeOK(w, requestID, TraceDecisionResponseFromResult(result), nil)
 }
 
 func (s *Server) handleContextBuild(w http.ResponseWriter, r *http.Request) {
@@ -360,7 +360,7 @@ func (s *Server) handleContextBuild(w http.ResponseWriter, r *http.Request) {
 		s.writeMemoryError(w, requestID, err)
 		return
 	}
-	s.writeOK(w, requestID, ContextBuildResponseFromResult(result))
+	s.writeOK(w, requestID, ContextBuildResponseFromResult(result), result.Warnings)
 }
 
 func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
@@ -375,7 +375,7 @@ func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, requestID, "INTERNAL_ERROR", err.Error(), true, nil)
 		return
 	}
-	s.writeOK(w, requestID, SyncStatusResponseFromService(status))
+	s.writeOK(w, requestID, SyncStatusResponseFromService(status), nil)
 }
 
 func New(ctx context.Context, db *sql.DB, meta storage.Metadata, sync *memsync.Service, signer signing.Signer, selfPeerID string) (*Server, error) {
@@ -400,8 +400,12 @@ func decodeRequest(body io.Reader, dst any) error {
 	return nil
 }
 
-func (s *Server) writeOK(w http.ResponseWriter, requestID string, data any) {
-	writeEnvelope(w, http.StatusOK, NewEnvelope(requestID, data))
+func (s *Server) writeOK(w http.ResponseWriter, requestID string, data any, warnings []string) {
+	payload := NewEnvelope(requestID, data)
+	if len(warnings) > 0 {
+		payload.Warnings = append([]string{}, warnings...)
+	}
+	writeEnvelope(w, http.StatusOK, payload)
 }
 
 func (s *Server) writeError(w http.ResponseWriter, status int, requestID, code, message string, retryable bool, details any) {

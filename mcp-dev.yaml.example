@@ -1,0 +1,20 @@
+peer_id: "mcp-dev"
+database_path: "/tmp/crdt-agent-memory-mcp/agent_memory.sqlite"
+signing_key_path: "/tmp/crdt-agent-memory-mcp/peer.key"
+namespaces:
+  - "test"
+transport:
+  discovery_profile: "http-dev"
+  relay_profile: "none"
+api:
+  listen_addr: "127.0.0.1:3099"
+  base_url: "http://127.0.0.1:3101"
+sync:
+  listen_addr: "127.0.0.1:3199"
+  public_url: "http://127.0.0.1:3199"
+  interval_ms: 3000
+  batch_limit: 256
+  once_timeout_ms: 5000
+extensions:
+  crsqlite_path: "/absolute/path/to/crdt-agent-memory/.tools/crsqlite/crsqlite.dylib"
+  sqlite_vec_path: "/absolute/path/to/crdt-agent-memory/.tools/sqlite-vec/vec0.dylib"

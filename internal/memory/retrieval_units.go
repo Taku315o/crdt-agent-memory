@@ -19,6 +19,8 @@ import (
 	"crdt-agent-memory/internal/embedding"
 )
 
+var errSemanticProviderUnavailable = errors.New("semantic provider unavailable")
+
 func normalizeRecallRequest(req RecallRequest) RecallRequest {
 	req.Query = strings.TrimSpace(req.Query)
 	req.ProjectKey = strings.TrimSpace(req.ProjectKey)
@@ -134,47 +136,65 @@ func upsertRetrievalUnit(ctx context.Context, tx *sql.Tx, unit retrievalUnitReco
 }
 
 func (s *Service) Recall(ctx context.Context, req RecallRequest) ([]RecallResult, error) {
+	resp, err := s.RecallDetailed(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Items, nil
+}
+
+func (s *Service) RecallDetailed(ctx context.Context, req RecallRequest) (RecallResponse, error) {
 	req = normalizeRecallRequest(req)
 	if req.Query == "" {
-		return nil, errors.New("query is required")
+		return RecallResponse{}, errors.New("query is required")
 	}
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 10
 	}
-	return s.recallRetrievalUnits(ctx, req, limit)
+	items, warnings, err := s.recallRetrievalUnits(ctx, req, limit)
+	if err != nil {
+		return RecallResponse{}, err
+	}
+	return RecallResponse{Items: items, Warnings: warnings}, nil
 }
 
-func (s *Service) recallRetrievalUnits(ctx context.Context, req RecallRequest, limit int) ([]RecallResult, error) {
+func (s *Service) recallRetrievalUnits(ctx context.Context, req RecallRequest, limit int) ([]RecallResult, []string, error) {
 	candidateLimit := limit * 10
 	if candidateLimit < 50 {
 		candidateLimit = 50
 	}
 
 	candidates := map[string]*recallCandidate{}
+	warnings := []string{}
 	vectorEnabled, err := s.retrievalVectorIndexEnabled(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if vectorEnabled {
 		vectorRows, err := s.collectRetrievalVectorCandidates(ctx, req, candidateLimit)
 		if err != nil {
-			return nil, err
+			if errors.Is(err, errSemanticProviderUnavailable) {
+				warnings = append(warnings, "embedding provider unavailable; semantic ranking skipped")
+			} else {
+				return nil, nil, err
+			}
+		} else {
+			mergeRetrievalCandidates(candidates, vectorRows)
 		}
-		mergeRetrievalCandidates(candidates, vectorRows)
 	}
 	ftsRows, err := s.collectRetrievalFTSCandidates(ctx, req, candidateLimit)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	mergeRetrievalCandidates(candidates, ftsRows)
 	if len(candidates) == 0 {
-		return []RecallResult{}, nil
+		return []RecallResult{}, warnings, nil
 	}
 
 	rows, err := s.loadRetrievalCandidateRows(ctx, candidates)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	idsBySpace := map[string][]string{}
 	for _, row := range rows {
@@ -184,13 +204,17 @@ func (s *Service) recallRetrievalUnits(ctx context.Context, req RecallRequest, l
 	}
 	graphStats, err := s.loadRecallGraphStats(ctx, idsBySpace)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	artifactStats, err := s.loadRecallArtifactStats(ctx, idsBySpace)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return rankRetrievalRows(rows, graphStats, artifactStats, limit), nil
+	rankingProfile, err := s.loadRankingProfile(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rankRetrievalRows(rows, graphStats, artifactStats, limit, rankingProfile, req.Query), warnings, nil
 }
 
 func allowedMemorySpaces(req RecallRequest) []string {
@@ -258,7 +282,13 @@ func (s *Service) collectRetrievalFTSCandidates(ctx context.Context, req RecallR
 		return nil, err
 	}
 	if ftsEnabled {
-		return s.collectRetrievalFTS5Candidates(ctx, req, limit)
+		candidates, err := s.collectRetrievalFTS5Candidates(ctx, req, limit)
+		if err != nil {
+			return nil, err
+		}
+		if len(candidates) > 0 {
+			return candidates, nil
+		}
 	}
 	return s.collectRetrievalLIKECandidates(ctx, req, limit)
 }
@@ -395,9 +425,9 @@ func termMatchScore(terms []string, text string) int {
 }
 
 func (s *Service) collectRetrievalVectorCandidates(ctx context.Context, req RecallRequest, limit int) ([]recallCandidate, error) {
-	vector, err := embedding.FromText(ctx, req.Query)
+	vector, err := embedding.FromQuery(ctx, req.Query)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errSemanticProviderUnavailable, err)
 	}
 	vectorJSON, err := json.Marshal(vector)
 	if err != nil {
@@ -578,14 +608,15 @@ func latestTranscriptChunkFilter(unitRef string) string {
 	`, unitRef, unitRef)
 }
 
-func rankRetrievalRows(rows []recallCandidateRow, graphStats map[recallKey]recallGraphStat, artifactStats map[recallKey]recallArtifactStat, limit int) []RecallResult {
+func rankRetrievalRows(rows []recallCandidateRow, graphStats map[recallKey]recallGraphStat, artifactStats map[recallKey]recallArtifactStat, limit int, rankingProfile string, query string) []RecallResult {
 	nowMS := time.Now().UnixMilli()
+	profile := retrievalRankingProfile(rankingProfile)
 	scored := make([]scoredRecallRow, 0, len(rows))
 	for _, row := range rows {
 		bucket := rankingBucket(row.MemorySpace, row.SignatureStatus, row.HasSignature)
-		score := recallScore(row, graphStats[row.key], artifactStats[row.key], nowMS)
+		score := recallScoreForProfile(row, graphStats[row.key], artifactStats[row.key], nowMS, profile, query)
 		if row.MemorySpace == "transcript" {
-			score += 25
+			score += profile.transcriptBonus
 		}
 		scored = append(scored, scoredRecallRow{
 			row:         row,
@@ -611,6 +642,103 @@ func rankRetrievalRows(rows []recallCandidateRow, graphStats map[recallKey]recal
 		out = append(out, item.row.RecallResult)
 	}
 	return out
+}
+
+type retrievalRankingConfig struct {
+	name            string
+	semanticWeight  float64
+	lexicalWeight   float64
+	graphWeight     float64
+	artifactWeight  float64
+	recencyWeight   float64
+	sourceWeight    float64
+	exactMatchBoost float64
+	transcriptBonus float64
+}
+
+func retrievalRankingProfile(name string) retrievalRankingConfig {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ja", "ja-default":
+		return retrievalRankingConfig{
+			name:            "ja-default",
+			semanticWeight:  0.80,
+			lexicalWeight:   0.50,
+			graphWeight:     42.0,
+			artifactWeight:  40.0,
+			recencyWeight:   5.0,
+			sourceWeight:    24.0,
+			exactMatchBoost: 30.0,
+			transcriptBonus: 40.0,
+		}
+	default:
+		return retrievalRankingConfig{
+			name:            "default",
+			semanticWeight:  0.60,
+			lexicalWeight:   0.40,
+			graphWeight:     40.0,
+			artifactWeight:  40.0,
+			recencyWeight:   5.0,
+			sourceWeight:    20.0,
+			exactMatchBoost: 0,
+			transcriptBonus: 25.0,
+		}
+	}
+}
+
+func recallScoreForProfile(row recallCandidateRow, graph recallGraphStat, artifact recallArtifactStat, nowMS int64, profile retrievalRankingConfig, query string) float64 {
+	bucket := rankingBucket(row.MemorySpace, row.SignatureStatus, row.HasSignature)
+	score := float64(3-bucket) * 1000.0
+	score += row.TrustWeight * 100.0
+	score += recallSourceScoreForProfile(row, profile) * profile.sourceWeight
+	score += recallGraphScore(graph) * profile.graphWeight
+	score += recallArtifactScore(artifact) * profile.artifactWeight
+	score += recallRecencyScore(row.AuthoredAtMS, nowMS) * profile.recencyWeight
+	score += exactMatchScore(row, query) * profile.exactMatchBoost
+	return score
+}
+
+func recallSourceScoreForProfile(row recallCandidateRow, profile retrievalRankingConfig) float64 {
+	score := 0.0
+	if row.SemanticRank > 0 {
+		score += profile.semanticWeight / float64(row.SemanticRank)
+	}
+	if row.LexicalRank > 0 {
+		score += profile.lexicalWeight / float64(row.LexicalRank)
+	}
+	return score
+}
+
+func exactMatchScore(row recallCandidateRow, query string) float64 {
+	query = strings.TrimSpace(strings.ToLower(query))
+	if query == "" {
+		return 0
+	}
+	subject := strings.ToLower(row.Subject)
+	body := strings.ToLower(row.Body)
+	switch {
+	case strings.Contains(subject, query):
+		return 1.0
+	case strings.Contains(body, query):
+		return 0.75
+	default:
+		return 0
+	}
+}
+
+func (s *Service) loadRankingProfile(ctx context.Context) (string, error) {
+	var value string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM app_metadata WHERE key = 'ranking_profile'`).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "default", nil
+	}
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "no such table") && strings.Contains(msg, "app_metadata") {
+			return "default", nil
+		}
+		return "", err
+	}
+	return value, nil
 }
 
 func (s *Service) retrievalVectorIndexEnabled(ctx context.Context) (bool, error) {

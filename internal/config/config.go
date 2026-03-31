@@ -19,6 +19,8 @@ type Config struct {
 	Transport      Transport           `yaml:"transport"`
 	API            API                 `yaml:"api"`
 	Sync           Sync                `yaml:"sync"`
+	Search         Search              `yaml:"search"`
+	Embedding      Embedding           `yaml:"embedding"`
 	PeerRegistry   []PeerRegistryEntry `yaml:"peer_registry"`
 }
 
@@ -43,6 +45,20 @@ type Sync struct {
 	IntervalMS  int    `yaml:"interval_ms"`
 	BatchLimit  int    `yaml:"batch_limit"`
 	OnceTimeout int    `yaml:"once_timeout_ms"`
+}
+
+type Search struct {
+	Profile        string `yaml:"profile"`
+	FTSTokenizer   string `yaml:"fts_tokenizer"`
+	RankingProfile string `yaml:"ranking_profile"`
+}
+
+type Embedding struct {
+	Provider  string `yaml:"provider"`
+	Model     string `yaml:"model"`
+	BaseURL   string `yaml:"base_url"`
+	Dimension int    `yaml:"dimension"`
+	TimeoutMS int    `yaml:"timeout_ms"`
 }
 
 type PeerRegistryEntry struct {
@@ -82,6 +98,24 @@ func (c *Config) applyDefaults() {
 	if c.Sync.OnceTimeout <= 0 {
 		c.Sync.OnceTimeout = 5000
 	}
+	if strings.TrimSpace(c.Search.Profile) == "" {
+		c.Search.Profile = "default"
+	}
+	if strings.TrimSpace(c.Search.FTSTokenizer) == "" {
+		c.Search.FTSTokenizer = "unicode61"
+	}
+	if strings.TrimSpace(c.Search.RankingProfile) == "" {
+		c.Search.RankingProfile = c.Search.Profile
+	}
+	if strings.TrimSpace(c.Embedding.Provider) == "" {
+		c.Embedding.Provider = "local"
+	}
+	if c.Embedding.Dimension <= 0 {
+		c.Embedding.Dimension = 8
+	}
+	if c.Embedding.TimeoutMS <= 0 {
+		c.Embedding.TimeoutMS = 3000
+	}
 }
 
 func (c Config) Validate() error {
@@ -105,6 +139,22 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Sync.PublicURL) == "" {
 		return errors.New("sync.public_url is required")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Search.FTSTokenizer)) {
+	case "unicode61", "trigram":
+	default:
+		return errors.New("search.fts_tokenizer must be unicode61 or trigram")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Embedding.Provider)) {
+	case "local", "openai", "ruri-http":
+	default:
+		return errors.New("embedding.provider must be local, openai, or ruri-http")
+	}
+	if c.Embedding.Dimension <= 0 {
+		return errors.New("embedding.dimension must be positive")
+	}
+	if strings.EqualFold(strings.TrimSpace(c.Embedding.Provider), "ruri-http") && strings.TrimSpace(c.Embedding.BaseURL) == "" {
+		return errors.New("embedding.base_url is required when embedding.provider=ruri-http")
 	}
 	for _, peer := range c.PeerRegistry {
 		if strings.TrimSpace(peer.PeerID) == "" {

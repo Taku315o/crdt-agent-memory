@@ -86,6 +86,9 @@ make diag-peer-b
 
 ### Start services
 
+`serve-*` / `index-*` / `sync-*` は cleanup ラッパー経由で起動する。
+Ctrl-C や終了シグナルで止めても、子プロセスをまとめて後始末する。
+
 peer A:
 
 ```bash
@@ -102,9 +105,12 @@ make index-peer-b
 make sync-peer-b
 ```
 
-### One-shot sync smoke
+### Smoke Checks
 
 ```bash
+make smoke-sync-confirm
+make smoke-recall-confirm
+make smoke-e2e-manual
 make clean-dev
 make smoke-sync
 ```
@@ -119,8 +125,15 @@ make smoke-sync
 4. peer A に shared memory を保存
 5. peer A に private memory を保存
 6. peer A の `syncd --once` を実行
-7. peer B で recall
-8. peer B で sync status を確認
+7. peer B の DB で shared row と private 非存在を確認する
+8. peer A の API recall で検索結果を確認する
+9. peer B で sync status を確認する
+
+個別実行したい場合は以下を使う。
+
+1. `make smoke-sync-confirm`
+1. `make smoke-recall-confirm`
+1. `make smoke-e2e-manual`
 
 shared write の例:
 

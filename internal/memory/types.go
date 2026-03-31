@@ -103,6 +103,11 @@ type RecallResult struct {
 	OriginPeerID   string `json:"origin_peer_id"`
 }
 
+type RecallResponse struct {
+	Items    []RecallResult `json:"items"`
+	Warnings []string       `json:"warnings"`
+}
+
 type PromoteRequest struct {
 	ChunkIDs      []string `json:"chunk_ids"`
 	MemoryType    string   `json:"memory_type,omitempty"`
@@ -163,6 +168,7 @@ type ContextBundle struct {
 	RejectedOptions        []RecallResult    `json:"rejected_options"`
 	OpenTasks              []RecallResult    `json:"open_tasks"`
 	Artifacts              []ContextArtifact `json:"artifacts"`
+	Warnings               []string          `json:"warnings"`
 }
 
 type SignalRequest struct {

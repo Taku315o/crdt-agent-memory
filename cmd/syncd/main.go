@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"crdt-agent-memory/internal/config"
+	"crdt-agent-memory/internal/embedding"
 	"crdt-agent-memory/internal/memsync"
 	"crdt-agent-memory/internal/policy"
 	"crdt-agent-memory/internal/storage"
@@ -29,6 +30,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	embedding.Configure(cfg.Embedding)
 	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
 		Path:          cfg.DatabasePath,
 		CRSQLitePath:  cfg.Extensions.CRSQLitePath,
@@ -38,7 +40,12 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
-	meta, err := storage.RunMigrations(ctx, db)
+	meta, err := storage.RunMigrationsWithOptions(ctx, db, storage.MigrationOptions{
+		SearchProfile:  cfg.Search.Profile,
+		RankingProfile: cfg.Search.RankingProfile,
+		FTSTokenizer:   cfg.Search.FTSTokenizer,
+		EmbeddingDim:   cfg.Embedding.Dimension,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}

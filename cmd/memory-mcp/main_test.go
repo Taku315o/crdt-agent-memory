@@ -1,13 +1,24 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"crdt-agent-memory/internal/config"
+	"crdt-agent-memory/internal/testenv"
 )
 
 type storeHTTPRequest struct {
@@ -94,6 +105,576 @@ func TestToolsListIncludesStoreAndRecall(t *testing.T) {
 	for _, name := range []string{"memory.store", "memory.recall", "memory.candidates.list", "memory.candidates.approve", "memory.candidates.reject", "context.build", "memory.supersede", "memory.signal", "memory.explain", "memory.trace_decision", "memory.sync_status"} {
 		if !strings.Contains(string(raw), name) {
 			t.Fatalf("tool list missing %s", name)
+		}
+	}
+}
+
+func TestInitializeAdvertisesResourcesAndPrompts(t *testing.T) {
+	resp := handle(config.Config{}, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "initialize",
+		Params: mustJSON(t, map[string]any{
+			"protocolVersion": "2025-06-18",
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %#v", resp.Error)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", resp.Result)
+	}
+	caps, ok := result["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilities type = %T, want map[string]any", result["capabilities"])
+	}
+	if _, ok := caps["tools"]; !ok {
+		t.Fatal("capabilities missing tools")
+	}
+	if _, ok := caps["resources"]; !ok {
+		t.Fatal("capabilities missing resources")
+	}
+	if _, ok := caps["prompts"]; !ok {
+		t.Fatal("capabilities missing prompts")
+	}
+}
+
+func TestInitializeNegotiatesSupportedProtocolVersion(t *testing.T) {
+	resp := handle(config.Config{}, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "initialize",
+		Params: mustJSON(t, map[string]any{
+			"protocolVersion": "2025-06-18",
+			"clientInfo": map[string]any{
+				"name":    "inspector",
+				"version": "1.0.0",
+			},
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %#v", resp.Error)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", resp.Result)
+	}
+	if result["protocolVersion"] != "2025-06-18" {
+		t.Fatalf("protocolVersion = %v, want 2025-06-18", result["protocolVersion"])
+	}
+}
+
+func TestInitializeFallsBackToDefaultProtocolVersion(t *testing.T) {
+	resp := handle(config.Config{}, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "initialize",
+		Params: mustJSON(t, map[string]any{
+			"protocolVersion": "2026-01-01",
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %#v", resp.Error)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", resp.Result)
+	}
+	if result["protocolVersion"] != defaultMCPProtocolVersion {
+		t.Fatalf("protocolVersion = %v, want %s", result["protocolVersion"], defaultMCPProtocolVersion)
+	}
+}
+
+func TestEmptyResourcesAndPromptsList(t *testing.T) {
+	for _, method := range []string{"resources/list", "resources/templates/list", "prompts/list"} {
+		resp := handle(config.Config{}, rpcRequest{JSONRPC: "2.0", ID: 1, Method: method})
+		if resp.Error != nil {
+			t.Fatalf("%s returned error: %#v", method, resp.Error)
+		}
+	}
+}
+
+func TestReadMessageSupportsJSONLines(t *testing.T) {
+	r := bufio.NewReader(strings.NewReader(`{"jsonrpc":"2.0","method":"ping"}` + "\n"))
+	body, err := readMessage(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != `{"jsonrpc":"2.0","method":"ping"}` {
+		t.Fatalf("body = %q", string(body))
+	}
+}
+
+func TestReadMessageSupportsContentLengthFraming(t *testing.T) {
+	msg := `{"jsonrpc":"2.0","method":"ping"}`
+	input := "Content-Length: " + strconv.Itoa(len(msg)) + "\r\n\r\n" + msg
+	r := bufio.NewReader(strings.NewReader(input))
+	body, err := readMessage(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != msg {
+		t.Fatalf("body = %q", string(body))
+	}
+}
+
+func TestWriteMessageUsesJSONLineFraming(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() {
+		os.Stdout = oldStdout
+	}()
+
+	writeMessage(rpcResponse{JSONRPC: "2.0", ID: 1, Result: map[string]any{"ok": true}})
+	_ = w.Close()
+
+	var out bytes.Buffer
+	if _, err := out.ReadFrom(r); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	if strings.Contains(s, "Content-Length:") {
+		t.Fatalf("unexpected content-length framing: %q", s)
+	}
+	if !strings.HasSuffix(s, "\n") {
+		t.Fatalf("expected trailing newline, got %q", s)
+	}
+}
+
+func TestMemoryMCPSmoke(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping smoke test in short mode")
+	}
+
+	handle := startMemoryMCP(t, smokeConfigPath(t, "http://127.0.0.1:3101"))
+
+	handle.send(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+		},
+	})
+	resp := handle.read(t)
+	if got := resp["id"]; got != float64(1) {
+		t.Fatalf("initialize id = %v, want 1", got)
+	}
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("initialize result type = %T", resp["result"])
+	}
+	if got := result["protocolVersion"]; got != "2025-06-18" {
+		t.Fatalf("protocolVersion = %v, want 2025-06-18", got)
+	}
+
+	handle.send(t, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "notifications/initialized",
+	})
+
+	handle.send(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/list",
+	})
+	resp = handle.read(t)
+	if got := resp["id"]; got != float64(2) {
+		t.Fatalf("tools/list id = %v, want 2", got)
+	}
+	result, ok = resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("tools/list result type = %T", resp["result"])
+	}
+	tools, ok := result["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools type = %T", result["tools"])
+	}
+	if len(tools) == 0 {
+		t.Fatal("tools/list returned no tools")
+	}
+}
+
+func TestMemoryMCPStoreSmoke(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping smoke test in short mode")
+	}
+
+	var gotMethod string
+	var gotPath string
+	var gotBody storeHTTPRequest
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(apiEnvelope{
+			OK: true,
+			Data: map[string]any{
+				"memory_ref":     map[string]any{"memory_space": "shared", "memory_id": "01HSTORE"},
+				"indexed":        true,
+				"sync_eligible":  true,
+				"source_applied": true,
+			},
+			Warnings:  []string{"stored"},
+			RequestID: "req_store",
+		})
+	}))
+	t.Cleanup(apiServer.Close)
+
+	handle := startMemoryMCP(t, smokeConfigPath(t, apiServer.URL))
+	handle.send(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+		},
+	})
+	resp := handle.read(t)
+	if resp["result"] == nil {
+		t.Fatalf("initialize failed: %#v", resp)
+	}
+
+	handle.send(t, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "notifications/initialized",
+	})
+
+	handle.send(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "memory.store",
+			"arguments": map[string]any{
+				"visibility": "shared",
+				"namespace":  "team/dev",
+				"body":       "stored via smoke test",
+				"subject":    "smoke",
+			},
+		},
+	})
+	resp = handle.read(t)
+	if got := resp["id"]; got != float64(2) {
+		t.Fatalf("tools/call id = %v, want 2", got)
+	}
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("tools/call result type = %T", resp["result"])
+	}
+	sc, ok := result["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent type = %T", result["structuredContent"])
+	}
+	if sc["request_id"] != "req_store" {
+		t.Fatalf("request_id = %v, want req_store", sc["request_id"])
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("api method = %s, want POST", gotMethod)
+	}
+	if gotPath != "/v1/memory/store" {
+		t.Fatalf("api path = %s, want /v1/memory/store", gotPath)
+	}
+	if gotBody.Visibility != "shared" || gotBody.Namespace != "team/dev" || gotBody.Body != "stored via smoke test" {
+		t.Fatalf("api body = %#v", gotBody)
+	}
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Clean(filepath.Join(cwd, "..", ".."))
+}
+
+type memoryMCPHandle struct {
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    io.ReadCloser
+	reader    *bufio.Reader
+	stderrBuf *bytes.Buffer
+}
+
+func startMemoryMCP(t *testing.T, configPath string) *memoryMCPHandle {
+	t.Helper()
+	bin := buildMemoryMCPBinary(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	t.Cleanup(cancel)
+
+	cmd := exec.CommandContext(ctx, bin, "--config", configPath)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stderrBuf bytes.Buffer
+	go func() {
+		_, _ = stderrBuf.ReadFrom(stderr)
+	}()
+
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+	})
+
+	return &memoryMCPHandle{
+		cmd:       cmd,
+		stdin:     stdin,
+		stdout:    stdout,
+		reader:    bufio.NewReader(stdout),
+		stderrBuf: &stderrBuf,
+	}
+}
+
+func (h *memoryMCPHandle) send(t *testing.T, v any) {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintf(h.stdin, "%s\n", raw); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (h *memoryMCPHandle) read(t *testing.T) map[string]any {
+	t.Helper()
+	line, err := readLine(h.reader, 15*time.Second)
+	if err != nil {
+		t.Fatalf("read response: %v\nstderr:\n%s", err, h.stderrBuf.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(line, &resp); err != nil {
+		t.Fatalf("decode response: %v\nline=%s\nstderr:\n%s", err, string(line), h.stderrBuf.String())
+	}
+	return resp
+}
+
+func smokeConfigPath(t *testing.T, apiBaseURL string) string {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	keyPath := testenv.WriteSeedFile(t, dir, "mcp-dev")
+	content := fmt.Sprintf(`peer_id: "mcp-dev"
+database_path: %q
+signing_key_path: %q
+namespaces:
+  - "test"
+transport:
+  discovery_profile: "http-dev"
+  relay_profile: "none"
+api:
+  listen_addr: "127.0.0.1:3099"
+  base_url: %q
+sync:
+  listen_addr: "127.0.0.1:3199"
+  public_url: "http://127.0.0.1:3199"
+  interval_ms: 3000
+  batch_limit: 256
+  once_timeout_ms: 5000
+extensions:
+  crsqlite_path: %q
+  sqlite_vec_path: %q
+`, filepath.Join(dir, "agent_memory.sqlite"), keyPath, apiBaseURL, testenv.CRSQLitePath(t), testenv.SQLiteVecPath())
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfgPath
+}
+
+func buildMemoryMCPBinary(t *testing.T) string {
+	t.Helper()
+	root := repoRoot(t)
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		goBin = "/opt/homebrew/bin/go"
+	}
+	if _, err := os.Stat(goBin); err != nil {
+		t.Fatalf("go binary not found at %s: %v", goBin, err)
+	}
+
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "memory-mcp")
+	buildCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(buildCtx, goBin, "build", "-tags", "sqlite_fts5", "-o", binPath, "./cmd/memory-mcp")
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build memory-mcp: %v\n%s", err, string(out))
+	}
+	return binPath
+}
+
+func readLine(r io.Reader, timeout time.Duration) ([]byte, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	type result struct {
+		line []byte
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		reader, ok := r.(*bufio.Reader)
+		if !ok {
+			reader = bufio.NewReader(r)
+		}
+		line, err := reader.ReadBytes('\n')
+		ch <- result{line: line, err: err}
+	}()
+	select {
+	case res := <-ch:
+		return res.line, res.err
+	case <-deadline.C:
+		return nil, fmt.Errorf("timed out after %s", timeout)
+	}
+}
+
+func TestToolDescriptionsExplainWorkflowBoundaries(t *testing.T) {
+	tools := toolDefinitions()
+	descriptions := map[string]string{}
+	for _, tool := range tools {
+		name, _ := tool["name"].(string)
+		description, _ := tool["description"].(string)
+		descriptions[name] = description
+	}
+
+	cases := []struct {
+		name          string
+		useCaseCue    string
+		negativeCue   string
+		mutabilityCue string
+		toolRefs      []string
+	}{
+		{
+			name:          "memory.store",
+			useCaseCue:    "durable",
+			negativeCue:   "Do not use this for search",
+			mutabilityCue: "Create a new structured memory entry",
+			toolRefs:      []string{"memory.recall", "memory.promote", "memory.publish", "memory.supersede"},
+		},
+		{
+			name:          "memory.recall",
+			useCaseCue:    "Search existing transcript",
+			negativeCue:   "Prefer context.build instead",
+			mutabilityCue: "read-only",
+			toolRefs:      []string{"context.build"},
+		},
+		{
+			name:          "context.build",
+			useCaseCue:    "answer-ready context bundle",
+			negativeCue:   "Prefer this over memory.recall",
+			mutabilityCue: "do not use it to create or modify memory",
+			toolRefs:      []string{"memory.recall"},
+		},
+		{
+			name:          "memory.candidates.list",
+			useCaseCue:    "promotion candidates for review",
+			negativeCue:   "does not create memory",
+			mutabilityCue: "read-only",
+			toolRefs:      []string{"memory.promote", "memory.candidates.approve", "memory.candidates.reject"},
+		},
+		{
+			name:          "memory.candidates.approve",
+			useCaseCue:    "pending promotion candidate",
+			negativeCue:   "Do not use this for direct transcript promotion",
+			mutabilityCue: "materialize it as private structured memory",
+			toolRefs:      []string{"memory.promote", "memory.publish"},
+		},
+		{
+			name:          "memory.candidates.reject",
+			useCaseCue:    "pending promotion candidate",
+			negativeCue:   "does not alter existing memories",
+			mutabilityCue: "updates candidate review state",
+			toolRefs:      []string{"memory.candidates.approve"},
+		},
+		{
+			name:          "memory.promote",
+			useCaseCue:    "transcript chunks",
+			negativeCue:   "Do not use this for direct memory authoring",
+			mutabilityCue: "private structured memory",
+			toolRefs:      []string{"memory.store", "memory.publish"},
+		},
+		{
+			name:          "memory.publish",
+			useCaseCue:    "private structured memory",
+			negativeCue:   "Do not use it for first-time creation from scratch",
+			mutabilityCue: "creates a shared copy",
+			toolRefs:      []string{"memory.store", "memory.promote"},
+		},
+		{
+			name:          "memory.supersede",
+			useCaseCue:    "history should remain traceable",
+			negativeCue:   "Do not use this for brand-new memory",
+			mutabilityCue: "marking the prior one superseded",
+			toolRefs:      []string{"memory.store"},
+		},
+		{
+			name:          "memory.signal",
+			useCaseCue:    "review or trust signal",
+			negativeCue:   "Do not use this to correct the claim itself",
+			mutabilityCue: "mutates signal state",
+			toolRefs:      []string{"memory.supersede"},
+		},
+		{
+			name:          "memory.explain",
+			useCaseCue:    "why a specific memory was retrieved",
+			negativeCue:   "do not use it as a general search tool",
+			mutabilityCue: "read-only",
+			toolRefs:      []string{"memory.recall", "context.build", "memory.trace_decision"},
+		},
+		{
+			name:          "memory.trace_decision",
+			useCaseCue:    "support graph",
+			negativeCue:   "do not use it for broad retrieval",
+			mutabilityCue: "read-only",
+			toolRefs:      []string{"memory.explain"},
+		},
+		{
+			name:          "memory.sync_status",
+			useCaseCue:    "operational diagnostics",
+			negativeCue:   "does not fetch memory content",
+			mutabilityCue: "read-only",
+		},
+	}
+
+	for _, tc := range cases {
+		description := descriptions[tc.name]
+		if description == "" {
+			t.Fatalf("missing description for %s", tc.name)
+		}
+		for _, want := range []string{tc.useCaseCue, tc.negativeCue, tc.mutabilityCue} {
+			if !strings.Contains(description, want) {
+				t.Fatalf("description for %s = %q, want substring %q", tc.name, description, want)
+			}
+		}
+		for _, toolRef := range tc.toolRefs {
+			if !strings.Contains(description, toolRef) {
+				t.Fatalf("description for %s = %q, want tool reference %q", tc.name, description, toolRef)
+			}
 		}
 	}
 }

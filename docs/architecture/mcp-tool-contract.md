@@ -1,480 +1,87 @@
 # MCP Tool Contract
 
-Status: Draft v0.1
-Date: 2026-03-10
+Status: Current implementation contract
+Date: 2026-03-25
 
-## 1. Purpose
+## Purpose
 
-この文書は `memory-mcp` が公開する tools の contract を固定する。
+この文書は `memory-mcp` が現在公開している tool surface を固定する。
+MCP bridge は常に `memoryd` HTTP API を呼び、memory core を直接呼ばない。
 
-固定するもの:
+## General Rules
 
-- tool names
-- input schema
-- output schema
-- error model
-- idempotency semantics
-- sync fence や schema fence 中の応答
+- top-level response は `ok`, `data`, `warnings`, `request_id` を持つ
+- local operation は P2P sync 完了を待たない
+- sync 関連の劣化は `warnings` または `memory.sync_status` で扱う
+- essential functionality はすべて tools から到達可能である
+- tool `description` は LLM が使う選択ポリシーの一部として扱う
+- description には少なくとも「いつ使うか」「近い代替ツール」「使わない場面」「副作用 or read-only」を含める
 
-この文書を正本にして、Claude Desktop / Claude Code / Codex / Cursor / Gemini CLI / OpenCode 向け adapter はこの surface だけを登録する。
+## Schema Guidance
 
-## 2. General Contract Rules
+- 許可集合が安定している field は enum で締める
+  - 例: `visibility`, `signal_type`, `memory_space`, `redaction_policy`, candidate `status`
+- 許可集合がまだ open-ended な field は description で誘導し、後で安定したら enum 化する
+  - 現時点の `memory_type` はこの扱いに寄せる
+- つまり schema は「厳密制約できる部分」を担当し、description は「選択と open vocabulary の誘導」を担当する
 
-### Naming
+## Current Tools
 
-MVP の tool 名は dotted namespace に固定する。
+### Read / Context
+
+- `memory.recall`
+  - transcript / private / shared の unified recall
+- `context.build`
+  - role-organized context bundle を返す
+- `memory.explain`
+  - recall match の理由と trust の影響を返す
+- `memory.trace_decision`
+  - relation graph, artifacts, transcript provenance を返す
+- `memory.sync_status`
+  - local sync health を返す
+
+### Write / Lifecycle
 
 - `memory.store`
-- `memory.recall`
+  - structured memory を直接保存する
 - `memory.supersede`
+  - shared memory を履歴付きで置き換える
 - `memory.signal`
-- `memory.trace_decision`
-- `memory.explain`
-- `memory.sync_status`
-
-### Response envelope
-
-すべての tool は次の top-level 形を返す。
-
-```json
-{
-  "ok": true,
-  "data": {},
-  "warnings": [],
-  "request_id": "req_01..."
-}
-```
-
-error 時:
-
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "SCHEMA_FENCED",
-    "message": "Shared schema mismatch prevents sync for this namespace.",
-    "retryable": false,
-    "details": {}
-  },
-  "request_id": "req_01..."
-}
-```
-
-### Common error codes
-
-| Code | Meaning | Retryable |
-| --- | --- | --- |
-| `INVALID_ARGUMENT` | schema validation failure | no |
-| `NOT_FOUND` | referenced memory or artifact not found | no |
-| `CONFLICT` | semantic conflict that requires caller choice | no |
-| `SCHEMA_FENCED` | shared sync fenced due to schema mismatch | no |
-| `SYNC_DEGRADED` | transport or sync issue exists but local operation may still proceed | yes |
-| `UNAUTHORIZED_NAMESPACE` | caller tried disallowed namespace or visibility | no |
-| `PRIVATE_ONLY` | operation is not allowed on private/shared mismatch | no |
-| `INTERNAL_ERROR` | unexpected server failure | maybe |
-
-### Common semantics
-
-- tools operate against local canonical state only
-- tools do not block on P2P sync completion
-- tools may return sync-related warnings
-- `request_id` is always returned for diagnostics
-
-## 3. Capability Downgrade Policy
-
-MVP は tools-first なので、client capability の違いは次で吸収する。
-
-- if a client supports only tools:
-  - everything remains available
-- if a client supports resources/prompts too:
-  - optional sugar may be added later, but tools stay canonical
-- if a client is remote-only:
-  - use the same tool contract over `Streamable HTTP`
-
-Explicit downgrade rule:
-
-- resources/prompts non-support never removes functionality
-- all essential functionality must remain reachable through tools
-
-## 4. Tool: `memory.store`
-
-### Purpose
-
-- 新しい shared/private memory を append する
-
-### Input
-
-```json
-{
-  "memory_type": "fact",
-  "visibility": "shared",
-  "namespace": "team/dev",
-  "subject": "cr-sqlite",
-  "body": "crsql_changes is not a full immutable transaction log.",
-  "source_uri": "https://vlcn.io/docs/cr-sqlite/transactions",
-  "source_hash": null,
-  "relations": [
-    {
-      "relation_type": "derived_from",
-      "to_memory_id": "01H..."
-    }
-  ],
-  "idempotency_key": "optional-client-key"
-}
-```
-
-### Required fields
-
-- `memory_type`
-- `visibility`
-- `body`
-
-### Visibility rules
-
-- `shared` requires `namespace`
-- `private` routes to private table family
-
-### Output
-
-```json
-{
-  "ok": true,
-  "data": {
-    "memory_ref": {
-      "memory_space": "shared",
-      "memory_id": "01H..."
-    },
-    "indexed": false,
-    "sync_eligible": true
-  },
-  "warnings": []
-}
-```
-
-### Idempotency
-
-- if `idempotency_key` is provided, repeated identical requests should return the same successful result when feasible
-- idempotency scope is local peer only
-- absence of `idempotency_key` means append semantics; duplicate semantic content may create a new row
-
-### Relations
-
-- `relations[]` is optional and is written as outgoing edges from the stored memory
-- accepted `relation_type` values are `supports`, `contradicts`, `derived_from`, `about`, `caused_by`, and `references`
-- `supersedes` is reserved for `memory.supersede` and is not accepted by `memory.store`
-
-## 5. Tool: `memory.recall`
-
-### Purpose
-
-- query local memory and return ranked results with provenance
-
-### Input
-
-```json
-{
-  "query": "What do we know about MCP transport choices?",
-  "mode": "fact_lookup",
-  "visibility_filter": "both",
-  "namespace": "team/dev",
-  "top_k": 8,
-  "include_sources": true,
-  "include_contradictions": true
-}
-```
-
-### Output
-
-```json
-{
-  "ok": true,
-  "data": {
-    "items": [
-      {
-        "memory_ref": {
-          "memory_space": "shared",
-          "memory_id": "01H..."
-        },
-        "memory_type": "fact",
-        "body": "MCP standard transports are stdio and Streamable HTTP.",
-        "score": 0.91,
-        "score_breakdown": {
-          "lexical": 0.22,
-          "semantic": 0.41,
-          "graph": 0.10,
-          "temporal": 0.06,
-          "trust": 0.12
-        },
-        "sources": [],
-        "contradictions": []
-      }
-    ]
-  },
-  "warnings": []
-}
-```
-
-### Idempotency
-
-- pure read
-
-## 6. Tool: `memory.supersede`
-
-### Purpose
-
-- create a new memory claim and mark an old one superseded
-
-### Input
-
-```json
-{
-  "old_memory_id": "01H...",
-  "request": {
-    "namespace": "team/dev",
-    "body": "Updated claim body.",
-    "subject": "corrected claim",
-    "author_agent_id": "agent-a",
-    "origin_peer_id": "peer-a"
-  },
-}
-```
-
-### Output
-
-```json
-{
-  "ok": true,
-  "data": {
-    "old_memory_ref": {
-      "memory_space": "shared",
-      "memory_id": "01H..."
-    },
-    "new_memory_ref": {
-      "memory_space": "shared",
-      "memory_id": "01J..."
-    },
-    "lifecycle_state": "superseded"
-  },
-  "warnings": []
-}
-```
-
-### Idempotency
-
-- not naturally idempotent
-- caller should use a client-side idempotency key if duplicate submission is a risk
-
-## 7. Tool: `memory.signal`
-
-### Purpose
-
-- append a reinforce/deprecate/confirm/deny signal
-
-### Input
-
-```json
-{
-  "memory_ref": {
-    "memory_space": "private",
-    "memory_id": "01H..."
-  },
-  "signal_type": "confirm",
-  "value": 1.0,
-  "reason": "Re-verified against upstream docs.",
-  "author_agent_id": "agent-a",
-  "origin_peer_id": "peer-a"
-}
-```
-
-Allowed `signal_type`:
-
-- `reinforce`
-- `deprecate`
-- `confirm`
-- `deny`
-- `pin`
-- `bookmark`
-
-Notes:
-
-- `store` is reserved for internal initial-write events and is rejected by the API
-- `value` must be greater than `0`
-- `memory_ref.memory_space` may be `shared` or `private`
-
-### Output
-
-```json
-{
-  "ok": true,
-  "data": {
-    "signal_id": "01S..."
-  },
-  "warnings": []
-}
-```
-
-### Idempotency
-
-- append semantic
-- duplicate prevention is caller responsibility unless explicit idempotency key support is later added
-
-## 8. Tool: `memory.trace_decision`
-
-### Purpose
-
-- explain a decision by walking supporting and contradicting edges
-
-### Input
-
-```json
-{
-  "memory_ref": {
-    "memory_space": "shared",
-    "memory_id": "01H..."
-  },
-  "depth": 2
-}
-```
-
-### Output
-
-```json
-{
-  "ok": true,
-  "data": {
-    "decision": {},
-    "supports": [],
-    "contradictions": [],
-    "artifacts": []
-  },
-  "warnings": []
-}
-```
-
-## 9. Tool: `memory.explain`
-
-### Purpose
-
-- explain why a memory appeared in recall or why it is trusted
-
-### Input
-
-```json
-{
-  "memory_ref": {
-    "memory_space": "shared",
-    "memory_id": "01H..."
-  },
-  "query": "explain contract body"
-}
-```
-
-### Output
-
-```json
-{
-  "ok": true,
-  "data": {
-    "provenance": {
-      "namespace": "team/dev",
-      "memory_type": "fact",
-      "subject": "explain",
-      "lifecycle_state": "active",
-      "source_uri": "",
-      "source_hash": "",
-      "author_agent_id": "agent-a",
-      "origin_peer_id": "peer-a",
-      "authored_at_ms": 1742400000000
-    },
-    "score_breakdown": {
-      "matched_query": true,
-      "recall_eligible": true,
-      "lexical_bm25": -0.42,
-      "ranking_bucket": 0,
-      "trust_weight": 1.0,
-      "authored_at_ms": 1742400000000
-    },
-    "trust_summary": {
-      "signature_status": "valid",
-      "signature_detail": "",
-      "peer_trust_state": "allow",
-      "peer_trust_weight": 1.0,
-      "has_signing_key": true
-    },
-    "signal_summary": {
-      "store": {
-        "count": 1,
-        "sum": 1.0,
-        "latest_signal_at_ms": 1742400000000
-      }
-    }
-  },
-  "warnings": []
-}
-```
-
-## 10. Tool: `memory.sync_status`
-
-### Purpose
-
-- return local sync health without mutating state
-
-### Input
-
-```json
-{
-  "namespace": "team/dev"
-}
-```
-
-### Output
-
-```json
-{
-  "ok": true,
-  "data": {
-    "namespace": "team/dev",
-    "state": "healthy",
-    "schema_fenced": false,
-    "peers": [
-      {
-        "peer_id": "endpointid:peer-b",
-        "last_success_at_ms": 1741600000000,
-        "last_error": null
-      }
-    ]
-  },
-  "warnings": []
-}
-```
-
-## 11. Fence And Degraded-State Behavior
-
-### Shared schema fence
-
-- `memory.recall` continues to work locally
-- `memory.store` for shared visibility still succeeds locally unless local policy disables it
-- `memory.sync_status` must surface `schema_fenced=true`
-- warnings should mention that remote peers may not receive new shared writes until compatibility is restored
-
-### Transport degraded
-
-- local read/write tools continue
-- `warnings` may include `SYNC_DEGRADED`
-
-### Namespace unauthorized
-
-- mutating tools fail with `UNAUTHORIZED_NAMESPACE`
-
-## 12. Validation Rules
-
-- unknown fields should be ignored only if explicitly allowed in future versions; MVP is fail-closed on unknown required semantics
-- enum values must be validated strictly
-- `visibility=shared` without `namespace` is invalid
-- `memory_space` in refs must be either `shared` or `private`
-
-## 13. Versioning
-
-- tool names remain stable within MVP
-- additive optional fields are preferred
-- breaking schema changes require protocol/version bump
+  - shared/private memory に signal を追加する
+
+### Transcript Promotion
+
+- `memory.promote`
+  - transcript chunk(s) から private structured memory を作る
+- `memory.publish`
+  - private structured memory を shared memory に公開する
+- `memory.candidates.list`
+  - pending / reviewed promotion candidates を列挙する
+- `memory.candidates.approve`
+  - candidate を承認して private memory を作る
+- `memory.candidates.reject`
+  - candidate を却下する
+
+## Tool Boundaries
+
+- transcript 由来の durable memory 化は `memory.store` ではなく `memory.promote` または `memory.candidates.approve`
+- shared 化は常に `memory.publish`
+- shared memory の訂正は `memory.supersede`
+- candidate triage は `memory.candidates.*`
+
+## Error Model
+
+| Code | Meaning |
+| --- | --- |
+| `INVALID_ARGUMENT` | request schema or validation failure |
+| `NOT_FOUND` | referenced memory / candidate / artifact not found |
+| `PRIVATE_ONLY` | operation is not allowed on private/shared mismatch |
+| `CANDIDATE_NOT_PENDING` | candidate was already reviewed |
+| `METHOD_NOT_ALLOWED` | wrong HTTP method behind the bridge |
+
+## Notes On Current Semantics
+
+- `memory.recall` は transcript/private/shared retrieval unit を統合する
+- transcript chunk は append-only で、recall は各 session の最新 `chunk_strategy_version` だけを見る
+- candidate buffer は ingest 時に `decision`, `task_candidate`, `rationale`, `debug_trace` から生成される
+- `memory.trace_decision` は promoted memory から元 transcript chunk を辿れる

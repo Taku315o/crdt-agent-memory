@@ -1,11 +1,12 @@
 # Non-Functional Requirements
 
-Status: Draft v0.3
-Date: 2026-03-10
+Status: Current reference
+Date: 2026-03-26
 
 ## 1. Scope
 
 この文書は CRDT-Agent-Memory の品質属性、運用制約、セキュリティ要件、性能目標を定義する。
+現行実装では transcript lane と candidate buffer も対象に含める。
 
 ## 2. Assumptions
 

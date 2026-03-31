@@ -3,92 +3,56 @@
 Status: Current implementation snapshot
 Date: 2026-03-25
 
-## 1. What Has Been Done
+## Summary
 
-This repository now has a usable local development path for shared/private memory, transcript ingest, unified retrieval, promote/publish flow, peer sync, indexing, and MCP tooling.
+この repository は、shared/private memory、transcript ingest、unified retrieval、candidate buffer、promote/publish、traceability、MCP bridge、`http-dev` ベースの peer sync を持つローカル実装として成立している。
 
-### Step 1: Transport abstraction
+現時点の重要な到達点は以下。
 
-- `http-dev` transport was extracted behind interfaces.
-- `syncd` now depends on transport boundaries instead of transport details.
-- HTTP transport implementation was moved out of the sync core.
-- This makes an Iroh transport swap much smaller than before.
+- transcript / private / shared を `retrieval_units` で統合検索できる
+- transcript chunk は append-only で複数 strategy version を共存できる
+- recall は各 session の最新 `chunk_strategy_version` の transcript だけを検索対象にする
+- promote candidate buffer が入り、ingest → candidate → approve/reject → private memory の 2 段階昇格になった
+- `trace_decision` は promoted memory から元 transcript chunk を追跡できる
+- shared memory のみが CRDT sync lane に乗る
 
-### Step 2: Transport-level sync regression coverage
-
-- Added `httptest.Server` based integration tests for the transport layer.
-- Shared writes reach peers.
-- Private writes stay local.
-- Replay is safe.
-- Schema mismatch fences peers.
-- Allowlist and namespace mismatch cases are covered.
-
-### Step 3: memoryd API contract stabilization
-
-- `store`, `recall`, `supersede`, and `sync_status` use explicit request/response DTOs.
-- HTTP error responses use a single envelope shape.
-- `request_id` and `warnings` are part of the contract.
-- Docs were updated so the dev surface and MCP bridge shape stay aligned.
-
-### Step 4: indexd operational minimum
-
-- Queue processing is retry-safe per item.
-- Missing source rows clean up stale embeddings.
-- Diagnostics now expose processed and pending counts.
-- Shared/private reindex behavior is covered by tests.
-- Queue backlog can be observed via `indexd --diag` and `index_diag` logs.
-
-### Step 5: Transcript / Promote / Publish / Context
-
-- Added transcript-local tables for sessions, messages, chunks, promotions, publications, and transcript artifact spans.
-- Added deterministic transcript ingest with idempotent message handling.
-- Added unified `retrieval_units` based recall across transcript/private/shared memory spaces.
-- Added `memory.promote`, `memory.publish`, and `context.build`.
-- Added publish-time redaction policy handling.
-- Added transcript artifact extraction, promote-time artifact inheritance, and transcript provenance in `trace_decision`.
-
-### Step 6: MCP expansion
-
-- `memory-mcp` now exposes `memory.store`, `memory.recall`, `context.build`, `memory.promote`, `memory.publish`, `memory.supersede`, `memory.signal`, `memory.explain`, `memory.trace_decision`, and `memory.sync_status`.
-- The MCP bridge always calls `memoryd` over HTTP.
-- The bridge does not call the memory core directly.
-- Tool calls forward `request_id` and `warnings` from the HTTP envelope.
-- Manual smoke can now be driven through MCP tools instead of direct curl calls.
-
-## 2. Current State By Area
+## Implemented Areas
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Local memory core | Broadly usable for dev use | shared/private routing, unified recall, promote/publish, traceability, HTTP surface are in place |
-| Sync core | Functional in `http-dev` mode | handshake, apply, replay safety, quarantine, status surface are implemented |
-| Transport | Abstracted, but still `http-dev` only | Iroh is still pending |
-| Transcript lane | Implemented locally | ingest, chunking, transcript retrieval, artifact extraction, promotions are local-only |
-| Indexing | Retrieval-unit level reached | retry-safe processing, cleanup, diagnostics, transcript/private/shared support |
-| MCP bridge | Broad enough for agent workflows | `store` / `recall` / `context.build` / `promote` / `publish` / `trace_decision` and others are available |
-| Observability | Basic operational visibility exists | queue backlog and sync status are inspectable |
+| Local memory core | Implemented | shared/private routing, signals, supersede, explain, trace are available |
+| Transcript lane | Implemented | session/message/chunk storage, artifact extraction, append-only chunk versioning, candidate generation |
+| Promotion flow | Implemented | manual promote と candidate approve/reject の両方を提供 |
+| Retrieval | Implemented | transcript/private/shared unified recall, FTS5 fallback, sqlite-vec support |
+| Publishing | Implemented | private structured memory から shared memory への explicit publish |
+| Sync core | Functional in `http-dev` mode | handshake, apply, replay safety, quarantine, sync status は実装済み |
+| MCP bridge | Implemented | `memory.store`, `memory.recall`, `memory.promote`, `memory.publish`, `memory.candidates.*` などを公開 |
+| Indexing | Implemented | retrieval-unit level indexing, cleanup, retry-safe queue processing |
 
-## 3. Remaining Work
+## Newly Landed Since The Initial Transcript Design
 
-The following items are still not implemented or are only partially implemented.
+- promotion candidate tables and approval flow
+- ingest-time candidate generation for `decision`, `task_candidate`, `rationale`, `debug_trace`
+- transcript chunk version coexistence
+- latest-version-only transcript recall filtering
 
-- Iroh transport replacement.
-- Removing the remaining `sync_change_log` dependency in the sync path.
-- Hardening the sync/index path so CRR schema changes are less brittle.
-- transcript chunk version coexistence and active chunk-set pointering.
-- independent `transcript.search` API.
-- richer `context.build` scoring and packing.
-- Default production semantic embedding rollout across all environments and model management.
-- Richer graph-based explainability beyond query-aware trust/bm25 breakdown.
+## Remaining Work
 
-## 4. Important Gaps To Keep In Mind
+- Iroh transport replacement
+- `transcript.search` の独立 surface
+- `context.build` の packing / ranking 強化
+- sync path からの `sync_change_log` 依存の縮小
+- production embedding rollout と運用方針の固定
 
-- Sync still runs in `http-dev`, not Iroh.
-- The sync extraction path still depends on the `sync_change_log` capture flow.
-- `memory.recall` now merges transcript/private/shared retrieval units. It uses FTS5 when available and a token-aware lexical fallback when it is not.
-- `memory.explain` is query-aware and trust-aware, but it is still a per-row breakdown helper rather than the future unified hybrid reranker.
-- `context.build` exists, but it is still a first practical bundle builder, not the final agent-tuned context packing system.
+## Release Readiness Notes
 
-## 5. Verification
+OSS としてのコア説明は成立しているが、release 前に継続して見るべき点は以下。
 
-- `go test ./...` passes as of this snapshot.
-- Transcript ingest, promote/publish flow, traceability, API contract, index worker, and MCP bridge all have regression tests around the new behavior.
+- transport docs を `http-dev` 現状に明確に寄せる
+- concept note と current docs の境界を維持する
+- package internals は current summary に集約し、古いメモを archive 扱いにする
+
+## Verification
+
+- `go test ./...` passes on the current branch
+- transcript ingest, candidate flow, promote/publish, traceability, API contract, MCP bridge, sync, index worker に回帰テストがある
