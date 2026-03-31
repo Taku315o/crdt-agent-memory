@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"crdt-agent-memory/internal/api"
@@ -26,9 +28,11 @@ func main() {
 	var configPath string
 	var command string
 	var withIndexer bool
+	var insecureDeterministicKeygen bool
 	flag.StringVar(&configPath, "config", "", "path to config yaml")
 	flag.StringVar(&command, "cmd", "serve", "command: migrate|diag|serve|keygen")
 	flag.BoolVar(&withIndexer, "with-indexer", false, "run the index worker in-process")
+	flag.BoolVar(&insecureDeterministicKeygen, "insecure-deterministic-keygen", false, "derive the keygen seed from peer_id instead of generating a random seed")
 	flag.Parse()
 
 	// keygen command doesn't need a config
@@ -40,9 +44,15 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		seed := seedForPeer(cfg.PeerID)
+		seed, err := keygenSeed(cfg.PeerID, insecureDeterministicKeygen)
+		if err != nil {
+			log.Fatal(err)
+		}
 		signer, err := signing.NewSignerFromSeed(seed)
 		if err != nil {
+			log.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(cfg.SigningKeyPath), 0o750); err != nil {
 			log.Fatal(err)
 		}
 		// Write seed to file
@@ -192,4 +202,15 @@ func runScrubberWorker(ctx context.Context, svc *scrubber.Service) {
 func seedForPeer(peerID string) []byte {
 	sum := sha256.Sum256([]byte("crdt-agent-memory/" + peerID))
 	return sum[:]
+}
+
+func keygenSeed(peerID string, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return seedForPeer(peerID), nil
+	}
+	seed := make([]byte, 32)
+	if _, err := rand.Read(seed); err != nil {
+		return nil, fmt.Errorf("generate random signing seed: %w", err)
+	}
+	return seed, nil
 }
