@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -27,9 +28,9 @@ func (l Layout) logPath(service string) string {
 }
 
 func ResolveLayout(profile string) (Layout, error) {
-	profile = strings.TrimSpace(profile)
-	if profile == "" {
-		return Layout{}, errors.New("profile is required")
+	profile, err := normalizeProfileName(profile)
+	if err != nil {
+		return Layout{}, err
 	}
 	configRoot, err := userConfigRoot()
 	if err != nil {
@@ -86,4 +87,43 @@ func defaultPorts(profile string) (int, int) {
 	_, _ = h.Write([]byte(profile))
 	offset := int(h.Sum32() % 1000)
 	return 35000 + offset, 36000 + offset
+}
+
+func normalizeProfileName(profile string) (string, error) {
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		return "", errors.New("profile is required")
+	}
+	for _, r := range profile {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '-', '_':
+			continue
+		default:
+			return "", errors.New("profile may only contain letters, digits, hyphen, and underscore")
+		}
+	}
+	return profile, nil
+}
+
+func validateServiceName(service string) error {
+	if !slices.Contains([]string{"memoryd", "indexd", "syncd"}, service) {
+		return errors.New("unsupported service")
+	}
+	return nil
+}
+
+func ensureWithinRoot(path, root string) error {
+	cleanPath := filepath.Clean(path)
+	cleanRoot := filepath.Clean(root)
+	rel, err := filepath.Rel(cleanRoot, cleanPath)
+	if err != nil {
+		return err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errors.New("path escapes managed root")
+	}
+	return nil
 }

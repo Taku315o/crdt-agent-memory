@@ -413,7 +413,7 @@ func termMatchScore(terms []string, text string) int {
 }
 
 func (s *Service) collectRetrievalVectorCandidates(ctx context.Context, req RecallRequest, limit int) ([]recallCandidate, error) {
-	vector, err := embedding.FromText(ctx, req.Query)
+	vector, err := embedding.FromQuery(ctx, req.Query)
 	if err != nil {
 		return nil, err
 	}
@@ -633,15 +633,15 @@ func rankRetrievalRows(rows []recallCandidateRow, graphStats map[recallKey]recal
 }
 
 type retrievalRankingConfig struct {
-	name               string
-	semanticWeight     float64
-	lexicalWeight      float64
-	graphWeight        float64
-	artifactWeight     float64
-	recencyWeight      float64
-	sourceWeight       float64
-	exactMatchBoost    float64
-	transcriptBonus    float64
+	name            string
+	semanticWeight  float64
+	lexicalWeight   float64
+	graphWeight     float64
+	artifactWeight  float64
+	recencyWeight   float64
+	sourceWeight    float64
+	exactMatchBoost float64
+	transcriptBonus float64
 }
 
 func retrievalRankingProfile(name string) retrievalRankingConfig {

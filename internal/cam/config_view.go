@@ -40,6 +40,7 @@ func (a *App) ConfigShow(ctx context.Context, target string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported config target %q", target)
 	}
+	// #nosec G304 -- path is selected from the managed profile layout, not arbitrary user input.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return "", err

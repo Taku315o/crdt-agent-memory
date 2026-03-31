@@ -138,7 +138,11 @@ func embeddingProviderHealthy(ctx context.Context, cfg config.Config) (bool, str
 		if strings.TrimSpace(cfg.Embedding.BaseURL) == "" {
 			return false, "embedding.base_url is empty"
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Embedding.BaseURL, nil)
+		healthURL := cfg.Embedding.BaseURL
+		if strings.HasSuffix(strings.TrimRight(healthURL, "/"), "/embed") {
+			healthURL = strings.TrimSuffix(strings.TrimRight(healthURL, "/"), "/embed") + "/healthz"
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 		if err != nil {
 			return false, err.Error()
 		}
@@ -148,7 +152,7 @@ func embeddingProviderHealthy(ctx context.Context, cfg config.Config) (bool, str
 			return false, err.Error()
 		}
 		defer resp.Body.Close()
-		return true, fmt.Sprintf("%s status=%d", cfg.Embedding.BaseURL, resp.StatusCode)
+		return true, fmt.Sprintf("%s status=%d", healthURL, resp.StatusCode)
 	case "openai":
 		if strings.TrimSpace(cfg.Embedding.Model) == "" {
 			return false, "embedding.model is empty"

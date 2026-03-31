@@ -165,23 +165,13 @@ func RunMigrationsWithOptions(ctx context.Context, db *sql.DB, opts MigrationOpt
 				return Metadata{}, err
 			}
 		}
-		vecDDL := `
-			CREATE VIRTUAL TABLE IF NOT EXISTS memory_embedding_vectors USING vec0(
-				memory_space TEXT PARTITION KEY,
-				memory_id TEXT,
-				embedding FLOAT[` + fmt.Sprintf("%d", opts.EmbeddingDim) + `]
-			)
-		`
+		vecDDL := vectorTableDDL("memory_embedding_vectors", "memory_id", opts.EmbeddingDim)
+		// #nosec G202 -- dimension is range-checked in normalizeMigrationOptions and interpolated into fixed DDL.
 		if _, err := tx.ExecContext(ctx, vecDDL); err != nil {
 			return Metadata{}, fmt.Errorf("create vector index: %w", err)
 		}
-		retrievalVecDDL := `
-			CREATE VIRTUAL TABLE IF NOT EXISTS retrieval_embedding_vectors USING vec0(
-				memory_space TEXT PARTITION KEY,
-				unit_id TEXT,
-				embedding FLOAT[` + fmt.Sprintf("%d", opts.EmbeddingDim) + `]
-			)
-		`
+		retrievalVecDDL := vectorTableDDL("retrieval_embedding_vectors", "unit_id", opts.EmbeddingDim)
+		// #nosec G202 -- dimension is range-checked in normalizeMigrationOptions and interpolated into fixed DDL.
 		if _, err := tx.ExecContext(ctx, retrievalVecDDL); err != nil {
 			return Metadata{}, fmt.Errorf("create retrieval vector index: %w", err)
 		}
@@ -232,7 +222,21 @@ func normalizeMigrationOptions(opts MigrationOptions) MigrationOptions {
 	if opts.EmbeddingDim <= 0 {
 		opts.EmbeddingDim = 8
 	}
+	if opts.EmbeddingDim > 4096 {
+		opts.EmbeddingDim = 4096
+	}
 	return opts
+}
+
+func vectorTableDDL(tableName, idColumn string, dim int) string {
+	// #nosec G202 -- caller only passes fixed table/column names and a range-checked dimension.
+	return fmt.Sprintf(`
+			CREATE VIRTUAL TABLE IF NOT EXISTS %s USING vec0(
+				memory_space TEXT PARTITION KEY,
+				%s TEXT,
+				embedding FLOAT[%d]
+			)
+		`, tableName, idColumn, dim)
 }
 
 func hasFTS5(ctx context.Context, tx *sql.Tx) (bool, error) {

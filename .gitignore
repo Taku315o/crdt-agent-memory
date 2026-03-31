@@ -44,3 +44,11 @@ MCP_SETUP.md
 *.bak
 .mcp/config.json
 .mcp/inspector-config.json
+
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+.venv-*

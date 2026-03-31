@@ -241,7 +241,7 @@ func initDebugLogging() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	logDir := "/tmp/crdt-agent-memory-mcp"
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
+	if err := os.MkdirAll(logDir, 0o750); err != nil {
 		log.SetOutput(io.Discard)
 		return
 	}

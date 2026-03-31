@@ -18,6 +18,7 @@ import (
 )
 
 const DefaultDimension = 8
+const MaxDimension = 4096
 
 type Config struct {
 	Provider  string
@@ -28,8 +29,16 @@ type Config struct {
 	Timeout   time.Duration
 }
 
+type InputType string
+
+const (
+	InputTypeGeneric  InputType = "generic"
+	InputTypeQuery    InputType = "query"
+	InputTypeDocument InputType = "document"
+)
+
 type Provider interface {
-	Embed(ctx context.Context, text string) ([]float64, error)
+	Embed(ctx context.Context, text string, inputType InputType) ([]float64, error)
 }
 
 var (
@@ -66,11 +75,23 @@ func CurrentConfig() Config {
 }
 
 func FromText(ctx context.Context, text string) ([]float64, error) {
+	return fromText(ctx, text, InputTypeGeneric)
+}
+
+func FromQuery(ctx context.Context, text string) ([]float64, error) {
+	return fromText(ctx, text, InputTypeQuery)
+}
+
+func FromDocument(ctx context.Context, text string) ([]float64, error) {
+	return fromText(ctx, text, InputTypeDocument)
+}
+
+func fromText(ctx context.Context, text string, inputType InputType) ([]float64, error) {
 	prov, err := defaultProvider()
 	if err != nil {
 		return nil, err
 	}
-	return prov.Embed(ctx, text)
+	return prov.Embed(ctx, text, inputType)
 }
 
 func LocalFromText(text string) []float64 {
@@ -132,6 +153,9 @@ func normalizeDimension(v int) int {
 	if v <= 0 {
 		return DefaultDimension
 	}
+	if v > MaxDimension {
+		return MaxDimension
+	}
 	return v
 }
 
@@ -139,7 +163,7 @@ type localProvider struct {
 	dimension int
 }
 
-func (p localProvider) Embed(_ context.Context, text string) ([]float64, error) {
+func (p localProvider) Embed(_ context.Context, text string, _ InputType) ([]float64, error) {
 	return localEmbed(text, p.dimension), nil
 }
 
@@ -216,9 +240,14 @@ func isStopWord(token string) bool {
 }
 
 func hashBucket(token string, dimension int) int {
+	dimension = normalizeDimension(dimension)
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(token))
-	return int(h.Sum64() % uint64(dimension))
+	bucket := 0
+	for _, b := range h.Sum(nil) {
+		bucket = ((bucket << 8) | int(b)) % dimension
+	}
+	return bucket
 }
 
 func normalize(vec []float64) []float64 {
@@ -290,7 +319,7 @@ type openAIEmbeddingResponse struct {
 	} `json:"error,omitempty"`
 }
 
-func (p openAIProvider) Embed(ctx context.Context, text string) ([]float64, error) {
+func (p openAIProvider) Embed(ctx context.Context, text string, _ InputType) ([]float64, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil, errors.New("embedding text is required")
@@ -365,12 +394,15 @@ func newRuriHTTPProvider(cfg Config) (Provider, error) {
 	}, nil
 }
 
-func (p ruriHTTPProvider) Embed(ctx context.Context, text string) ([]float64, error) {
+func (p ruriHTTPProvider) Embed(ctx context.Context, text string, inputType InputType) ([]float64, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil, errors.New("embedding text is required")
 	}
-	raw, err := json.Marshal(map[string]string{"input": text})
+	raw, err := json.Marshal(map[string]string{
+		"input":      text,
+		"input_type": string(inputType),
+	})
 	if err != nil {
 		return nil, err
 	}

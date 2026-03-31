@@ -56,6 +56,10 @@ func ResolveBinary(name string) (string, error) {
 }
 
 func runKeygen(ctx context.Context, memorydPath, configPath string) error {
+	if err := ensureBundledBinary(memorydPath, "memoryd"); err != nil {
+		return err
+	}
+	// #nosec G204 -- memorydPath is resolved from the bundled binary set and validated above.
 	cmd := exec.CommandContext(ctx, memorydPath, "--config", configPath, "--cmd", "keygen")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -65,15 +69,21 @@ func runKeygen(ctx context.Context, memorydPath, configPath string) error {
 }
 
 func startDetachedProcess(binPath string, args []string, logPath string) (int, error) {
+	base := filepath.Base(binPath)
+	if err := ensureBundledBinary(binPath, strings.TrimSuffix(base, filepath.Ext(base))); err != nil {
+		return 0, err
+	}
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o750); err != nil {
 		return 0, err
 	}
+	// #nosec G304 -- logPath is produced from the managed layout.
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return 0, err
 	}
 	defer logFile.Close()
 
+	// #nosec G204 -- binPath is resolved from the bundled binary set and validated above.
 	cmd := exec.Command(binPath, args...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -87,6 +97,7 @@ func startDetachedProcess(binPath string, args []string, logPath string) (int, e
 }
 
 func LoadRuntime(path string) (*RuntimeState, error) {
+	// #nosec G304 -- path is produced from ResolveLayout and stored under the managed runtime directory.
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -99,6 +110,17 @@ func LoadRuntime(path string) (*RuntimeState, error) {
 		return nil, err
 	}
 	return &state, nil
+}
+
+func ensureBundledBinary(path, name string) error {
+	resolved, err := ResolveBinary(name)
+	if err != nil {
+		return err
+	}
+	if path != resolved {
+		return fmt.Errorf("unexpected binary path for %s", name)
+	}
+	return nil
 }
 
 func SaveRuntime(path string, state RuntimeState) error {

@@ -61,7 +61,7 @@ func (s *Service) recallWithVector(ctx context.Context, req RecallRequest, limit
 	if candidateLimit < limit {
 		candidateLimit = limit
 	}
-	vector, err := embedding.FromText(ctx, req.Query)
+	vector, err := embedding.FromQuery(ctx, req.Query)
 	if err != nil {
 		return nil, err
 	}
@@ -389,7 +389,7 @@ func mergeRecallCandidates(dst map[recallKey]*recallCandidate, src []recallCandi
 }
 
 func (s *Service) collectVectorRecallCandidates(ctx context.Context, req RecallRequest, limit int) ([]recallCandidate, error) {
-	vector, err := embedding.FromText(ctx, req.Query)
+	vector, err := embedding.FromQuery(ctx, req.Query)
 	if err != nil {
 		return nil, err
 	}

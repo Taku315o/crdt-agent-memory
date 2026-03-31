@@ -79,8 +79,8 @@ func main() {
 		meta, err := storage.RunMigrationsWithOptions(ctx, db, storage.MigrationOptions{
 			SearchProfile:  cfg.Search.Profile,
 			RankingProfile: cfg.Search.RankingProfile,
-			FTSTokenizer: cfg.Search.FTSTokenizer,
-			EmbeddingDim: cfg.Embedding.Dimension,
+			FTSTokenizer:   cfg.Search.FTSTokenizer,
+			EmbeddingDim:   cfg.Embedding.Dimension,
 		})
 		if err != nil {
 			log.Fatal(err)
@@ -116,8 +116,8 @@ func main() {
 		meta, err := storage.RunMigrationsWithOptions(ctx, db, storage.MigrationOptions{
 			SearchProfile:  cfg.Search.Profile,
 			RankingProfile: cfg.Search.RankingProfile,
-			FTSTokenizer: cfg.Search.FTSTokenizer,
-			EmbeddingDim: cfg.Embedding.Dimension,
+			FTSTokenizer:   cfg.Search.FTSTokenizer,
+			EmbeddingDim:   cfg.Embedding.Dimension,
 		})
 		if err != nil {
 			log.Fatal(err)

@@ -31,6 +31,9 @@ func (a *App) Logs(ctx context.Context, w io.Writer, opts LogOptions) error {
 
 	services := make([]RuntimeService, 0, 3)
 	if opts.Service != "" {
+		if err := validateServiceName(opts.Service); err != nil {
+			return err
+		}
 		logPath := layout.logPath(opts.Service)
 		services = append(services, RuntimeService{Name: opts.Service, LogPath: logPath})
 	} else if state != nil {
@@ -53,18 +56,18 @@ func (a *App) Logs(ctx context.Context, w io.Writer, opts LogOptions) error {
 			}
 			fmt.Fprintf(w, "== %s ==\n", svc.Name)
 		}
-		if err := printTail(w, svc.LogPath, opts.Tail); err != nil {
+		if err := printTail(w, layout.LogsDir, svc.LogPath, opts.Tail); err != nil {
 			return err
 		}
 		if opts.Follow {
-			return followLog(ctx, w, svc.LogPath)
+			return followLog(ctx, w, layout.LogsDir, svc.LogPath)
 		}
 	}
 	return nil
 }
 
-func printTail(w io.Writer, path string, tail int) error {
-	lines, err := readLines(path)
+func printTail(w io.Writer, root, path string, tail int) error {
+	lines, err := readLines(root, path)
 	if err != nil {
 		return err
 	}
@@ -78,7 +81,11 @@ func printTail(w io.Writer, path string, tail int) error {
 	return nil
 }
 
-func readLines(path string) ([]string, error) {
+func readLines(root, path string) ([]string, error) {
+	if err := ensureWithinRoot(path, root); err != nil {
+		return nil, err
+	}
+	// #nosec G304 -- path is validated against the managed log directory before opening.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -92,7 +99,10 @@ func readLines(path string) ([]string, error) {
 	return lines, scanner.Err()
 }
 
-func followLog(ctx context.Context, w io.Writer, path string) error {
+func followLog(ctx context.Context, w io.Writer, root, path string) error {
+	if err := ensureWithinRoot(path, root); err != nil {
+		return err
+	}
 	offset := int64(0)
 	if info, err := os.Stat(path); err == nil {
 		offset = info.Size()
@@ -113,6 +123,7 @@ func followLog(ctx context.Context, w io.Writer, path string) error {
 		if info.Size() == offset {
 			continue
 		}
+		// #nosec G304 -- path is validated against the managed log directory before opening.
 		f, err := os.Open(path)
 		if err != nil {
 			return err

@@ -53,6 +53,7 @@ func (a *App) MCPInstall(ctx context.Context, opts MCPInstallOptions) (string, e
 	}
 	switch client {
 	case "codex":
+		// #nosec G304 -- path is selected from a fixed client-specific target.
 		existing, err := os.ReadFile(path)
 		if err != nil && !os.IsNotExist(err) {
 			return "", err
@@ -245,6 +246,7 @@ func ensureTargetDir(path string, create bool) error {
 }
 
 func loadJSONFile(path string) (map[string]any, error) {
+	// #nosec G304 -- path is selected from a fixed client-specific target.
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return map[string]any{}, nil
@@ -263,13 +265,19 @@ func loadJSONFile(path string) (map[string]any, error) {
 }
 
 func writeWithBackup(path string, raw []byte) error {
+	if err := ensureBackupPath(path); err != nil {
+		return err
+	}
+	// #nosec G304 -- path is selected from a fixed client-specific target.
 	if existing, err := os.ReadFile(path); err == nil {
+		// #nosec G703 -- backup path is the validated target path with a fixed ".bak" suffix.
 		if err := os.WriteFile(path+".bak", existing, 0o600); err != nil {
 			return err
 		}
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	// #nosec G703 -- target path is selected from a fixed client-specific location.
 	return os.WriteFile(path, raw, 0o600)
 }
 
@@ -319,4 +327,11 @@ func tomlInlineTable(values map[string]string) string {
 		}
 	}
 	return "{ " + strings.Join(parts, ", ") + " }"
+}
+
+func ensureBackupPath(path string) error {
+	if strings.HasSuffix(path, ".bak") {
+		return fmt.Errorf("refusing nested backup path: %s", path)
+	}
+	return nil
 }

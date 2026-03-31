@@ -10,6 +10,7 @@ type Settings struct {
 }
 
 func loadSettings(path string) (Settings, error) {
+	// #nosec G304 -- path is produced from ResolveLayout and stored under the managed config directory.
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return Settings{}, nil
