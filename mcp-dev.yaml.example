@@ -16,5 +16,5 @@ sync:
   batch_limit: 256
   once_timeout_ms: 5000
 extensions:
-  crsqlite_path: "/Users/hizawatakuto/Documents/MyProject/crdt-agent-memory/.tools/crsqlite/crsqlite.dylib"
-  sqlite_vec_path: "/Users/hizawatakuto/Documents/MyProject/crdt-agent-memory/.tools/sqlite-vec/vec0.dylib"
+  crsqlite_path: "/absolute/path/to/crdt-agent-memory/.tools/crsqlite/crsqlite.dylib"
+  sqlite_vec_path: "/absolute/path/to/crdt-agent-memory/.tools/sqlite-vec/vec0.dylib"
