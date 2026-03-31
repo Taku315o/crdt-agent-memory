@@ -400,6 +400,7 @@ type memoryMCPHandle struct {
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
 	stdout    io.ReadCloser
+	reader    *bufio.Reader
 	stderrBuf *bytes.Buffer
 }
 
@@ -443,6 +444,7 @@ func startMemoryMCP(t *testing.T, configPath string) *memoryMCPHandle {
 		cmd:       cmd,
 		stdin:     stdin,
 		stdout:    stdout,
+		reader:    bufio.NewReader(stdout),
 		stderrBuf: &stderrBuf,
 	}
 }
@@ -460,7 +462,7 @@ func (h *memoryMCPHandle) send(t *testing.T, v any) {
 
 func (h *memoryMCPHandle) read(t *testing.T) map[string]any {
 	t.Helper()
-	line, err := readLine(h.stdout, 15*time.Second)
+	line, err := readLine(h.reader, 15*time.Second)
 	if err != nil {
 		t.Fatalf("read response: %v\nstderr:\n%s", err, h.stderrBuf.String())
 	}
@@ -536,7 +538,10 @@ func readLine(r io.Reader, timeout time.Duration) ([]byte, error) {
 	}
 	ch := make(chan result, 1)
 	go func() {
-		reader := bufio.NewReader(r)
+		reader, ok := r.(*bufio.Reader)
+		if !ok {
+			reader = bufio.NewReader(r)
+		}
 		line, err := reader.ReadBytes('\n')
 		ch <- result{line: line, err: err}
 	}()
