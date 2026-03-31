@@ -251,7 +251,7 @@ func TestMemoryMCPSmoke(t *testing.T) {
 		t.Skip("skipping smoke test in short mode")
 	}
 
-	handle := startMemoryMCP(t, filepath.Join(repoRoot(t), "mcp-dev.yaml"))
+	handle := startMemoryMCP(t, smokeConfigPath(t, "http://127.0.0.1:3101"))
 
 	handle.send(t, map[string]any{
 		"jsonrpc": "2.0",
