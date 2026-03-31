@@ -392,7 +392,16 @@ func shouldRebuildVectorIndexes(ctx context.Context, tx *sql.Tx, appliedNewMigra
 		return false, err
 	}
 	if storedDim == "" {
-		return false, nil
+		var existing int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM sqlite_master
+			WHERE type = 'table'
+			  AND name IN ('memory_embedding_vectors', 'retrieval_embedding_vectors')
+		`).Scan(&existing); err != nil {
+			return false, err
+		}
+		return existing > 0, nil
 	}
 	return storedDim != fmt.Sprintf("%d", embeddingDim), nil
 }
