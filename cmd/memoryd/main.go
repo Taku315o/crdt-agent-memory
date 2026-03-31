@@ -13,6 +13,7 @@ import (
 
 	"crdt-agent-memory/internal/api"
 	"crdt-agent-memory/internal/config"
+	"crdt-agent-memory/internal/embedding"
 	"crdt-agent-memory/internal/indexer"
 	"crdt-agent-memory/internal/memsync"
 	"crdt-agent-memory/internal/policy"
@@ -61,6 +62,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	embedding.Configure(cfg.Embedding)
 	ctx := context.Background()
 	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
 		Path:          cfg.DatabasePath,
@@ -74,7 +76,10 @@ func main() {
 
 	switch command {
 	case "migrate":
-		meta, err := storage.RunMigrations(ctx, db)
+		meta, err := storage.RunMigrationsWithOptions(ctx, db, storage.MigrationOptions{
+			FTSTokenizer: cfg.Search.FTSTokenizer,
+			EmbeddingDim: cfg.Embedding.Dimension,
+		})
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -106,7 +111,10 @@ func main() {
 			summary.ScrubberSummary.OrphanSignals,
 		)
 	case "serve":
-		meta, err := storage.RunMigrations(ctx, db)
+		meta, err := storage.RunMigrationsWithOptions(ctx, db, storage.MigrationOptions{
+			FTSTokenizer: cfg.Search.FTSTokenizer,
+			EmbeddingDim: cfg.Embedding.Dimension,
+		})
 		if err != nil {
 			log.Fatal(err)
 		}

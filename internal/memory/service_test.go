@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"crdt-agent-memory/internal/config"
+	"crdt-agent-memory/internal/embedding"
 	"crdt-agent-memory/internal/indexer"
 	"crdt-agent-memory/internal/storage"
 	"crdt-agent-memory/internal/testenv"
@@ -217,6 +219,55 @@ func TestRecallUsesVectorIndexWhenAvailable(t *testing.T) {
 	}
 	if results[0].MemoryID != sharedID && results[0].MemoryID != privateID {
 		t.Fatalf("first recall result = %s, want one of indexed ids", results[0].MemoryID)
+	}
+}
+
+func TestRecallDetailedFallsBackToLexicalWithWarningWhenEmbeddingFails(t *testing.T) {
+	if testenv.SQLiteVecPath() == "" {
+		t.Skip("sqlite-vec not available")
+	}
+	fixture := newMemoryFixture(t, "peer-a")
+	ctx := fixture.ctx
+
+	if _, err := fixture.svc.Store(ctx, StoreRequest{
+		Visibility:    VisibilityShared,
+		Namespace:     "team/dev",
+		Body:          "日本語の壁打ちメモ",
+		Subject:       "shared",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	embedding.Configure(config.Embedding{Provider: "local", Dimension: 8, TimeoutMS: 1000})
+	if err := indexer.NewWorker(fixture.db, 0).ProcessOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	embedding.Configure(config.Embedding{
+		Provider:  "ruri-http",
+		BaseURL:   "http://127.0.0.1:1/embed",
+		Model:     "cl-nagoya-ruri-v3",
+		Dimension: 768,
+		TimeoutMS: 100,
+	})
+	t.Cleanup(func() { embedding.Configure(config.Embedding{}) })
+
+	resp, err := fixture.svc.RecallDetailed(ctx, RecallRequest{
+		Query:          "壁打ちメモ",
+		IncludeShared:  true,
+		IncludePrivate: false,
+		Limit:          5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Items) == 0 {
+		t.Fatal("expected lexical fallback results")
+	}
+	if len(resp.Warnings) != 1 {
+		t.Fatalf("warnings = %v, want 1 warning", resp.Warnings)
 	}
 }
 

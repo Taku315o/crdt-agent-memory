@@ -20,7 +20,7 @@ func TestShouldBackfillFTSIndexes(t *testing.T) {
 	}
 	defer tx.Rollback()
 
-	needBackfill, err := shouldBackfillFTSIndexes(ctx, tx, false)
+	needBackfill, err := shouldBackfillFTSIndexes(ctx, tx, false, "unicode61", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestShouldBackfillFTSIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	needBackfill, err = shouldBackfillFTSIndexes(ctx, tx, false)
+	needBackfill, err = shouldBackfillFTSIndexes(ctx, tx, false, "unicode61", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestShouldBackfillFTSIndexes(t *testing.T) {
 		t.Fatal("needBackfill = true, want false when both tables already exist")
 	}
 
-	needBackfill, err = shouldBackfillFTSIndexes(ctx, tx, true)
+	needBackfill, err = shouldBackfillFTSIndexes(ctx, tx, true, "unicode61", false)
 	if err != nil {
 		t.Fatal(err)
 	}

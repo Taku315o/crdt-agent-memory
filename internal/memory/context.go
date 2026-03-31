@@ -24,7 +24,8 @@ func (s *Service) ContextBuild(ctx context.Context, req ContextBuildRequest) (Co
 		if r.Limit <= 0 {
 			r.Limit = req.LimitPerSection
 		}
-		return s.recallRetrievalUnits(ctx, r, r.Limit)
+		items, _, err := s.recallRetrievalUnits(ctx, r, r.Limit)
+		return items, err
 	}
 	bundle := ContextBundle{}
 	var err error

@@ -27,10 +27,21 @@ type Metadata struct {
 	MinCompatibleProtocolVersion string
 }
 
+type MigrationOptions struct {
+	FTSTokenizer      string
+	EmbeddingDim      int
+	ForceRebuildIndex bool
+}
+
 func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
+	return RunMigrationsWithOptions(ctx, db, MigrationOptions{})
+}
+
+func RunMigrationsWithOptions(ctx context.Context, db *sql.DB, opts MigrationOptions) (Metadata, error) {
 	if err := detectLegacyDB(ctx, db); err != nil {
 		return Metadata{}, err
 	}
+	opts = normalizeMigrationOptions(opts)
 	migrationsDir := migrationDir()
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
@@ -131,20 +142,32 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 		return Metadata{}, err
 	}
 	if ftsEnabled {
-		rebuildFTS, err := shouldBackfillFTSIndexes(ctx, tx, appliedNewMigration)
+		rebuildFTS, err := shouldBackfillFTSIndexes(ctx, tx, appliedNewMigration, opts.FTSTokenizer, opts.ForceRebuildIndex)
 		if err != nil {
 			return Metadata{}, err
 		}
-		if err := ensureFTSIndexes(ctx, tx, rebuildFTS); err != nil {
+		if err := ensureFTSIndexes(ctx, tx, rebuildFTS, opts.FTSTokenizer); err != nil {
 			return Metadata{}, err
 		}
 	}
 	if vecEnabled {
+		rebuildVec, err := shouldRebuildVectorIndexes(ctx, tx, appliedNewMigration, opts.EmbeddingDim, opts.ForceRebuildIndex)
+		if err != nil {
+			return Metadata{}, err
+		}
+		if rebuildVec {
+			if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS memory_embedding_vectors`); err != nil {
+				return Metadata{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS retrieval_embedding_vectors`); err != nil {
+				return Metadata{}, err
+			}
+		}
 		vecDDL := `
 			CREATE VIRTUAL TABLE IF NOT EXISTS memory_embedding_vectors USING vec0(
 				memory_space TEXT PARTITION KEY,
 				memory_id TEXT,
-				embedding FLOAT[8]
+				embedding FLOAT[` + fmt.Sprintf("%d", opts.EmbeddingDim) + `]
 			)
 		`
 		if _, err := tx.ExecContext(ctx, vecDDL); err != nil {
@@ -154,7 +177,7 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 			CREATE VIRTUAL TABLE IF NOT EXISTS retrieval_embedding_vectors USING vec0(
 				memory_space TEXT PARTITION KEY,
 				unit_id TEXT,
-				embedding FLOAT[8]
+				embedding FLOAT[` + fmt.Sprintf("%d", opts.EmbeddingDim) + `]
 			)
 		`
 		if _, err := tx.ExecContext(ctx, retrievalVecDDL); err != nil {
@@ -175,6 +198,8 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 		"protocol_version":                meta.ProtocolVersion,
 		"min_compatible_protocol_version": meta.MinCompatibleProtocolVersion,
 		"fts5_enabled":                    boolString(ftsEnabled),
+		"fts_tokenizer":                   opts.FTSTokenizer,
+		"embedding_dimension":             fmt.Sprintf("%d", opts.EmbeddingDim),
 	} {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO app_metadata(key, value) VALUES(?, ?)
@@ -188,6 +213,16 @@ func RunMigrations(ctx context.Context, db *sql.DB) (Metadata, error) {
 		return Metadata{}, err
 	}
 	return meta, nil
+}
+
+func normalizeMigrationOptions(opts MigrationOptions) MigrationOptions {
+	if strings.TrimSpace(opts.FTSTokenizer) == "" {
+		opts.FTSTokenizer = "unicode61"
+	}
+	if opts.EmbeddingDim <= 0 {
+		opts.EmbeddingDim = 8
+	}
+	return opts
 }
 
 func hasFTS5(ctx context.Context, tx *sql.Tx) (bool, error) {
@@ -216,8 +251,8 @@ func hasSQLiteVec(ctx context.Context, tx *sql.Tx) (bool, error) {
 	return version != "", nil
 }
 
-func shouldBackfillFTSIndexes(ctx context.Context, tx *sql.Tx, appliedNewMigration bool) (bool, error) {
-	if appliedNewMigration {
+func shouldBackfillFTSIndexes(ctx context.Context, tx *sql.Tx, appliedNewMigration bool, tokenizer string, force bool) (bool, error) {
+	if appliedNewMigration || force {
 		return true, nil
 	}
 	var existing int
@@ -229,10 +264,29 @@ func shouldBackfillFTSIndexes(ctx context.Context, tx *sql.Tx, appliedNewMigrati
 	`).Scan(&existing); err != nil {
 		return false, err
 	}
-	return existing < 2, nil
+	if existing < 2 {
+		return true, nil
+	}
+	storedTokenizer, err := metadataValue(ctx, tx, "fts_tokenizer")
+	if err != nil {
+		return false, err
+	}
+	return storedTokenizer != "" && storedTokenizer != tokenizer, nil
 }
 
-func ensureFTSIndexes(ctx context.Context, tx *sql.Tx, rebuild bool) error {
+func ensureFTSIndexes(ctx context.Context, tx *sql.Tx, rebuild bool, tokenizer string) error {
+	tokenizerDDL, err := ftsTokenizerDDL(tokenizer)
+	if err != nil {
+		return err
+	}
+	if rebuild {
+		if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS memory_fts_index`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS retrieval_fts_index`); err != nil {
+			return err
+		}
+	}
 	statements := []string{
 		`CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts_index USING fts5(
 			memory_space UNINDEXED,
@@ -240,7 +294,7 @@ func ensureFTSIndexes(ctx context.Context, tx *sql.Tx, rebuild bool) error {
 			namespace UNINDEXED,
 			subject,
 			body
-		)`,
+		, tokenize='` + tokenizerDDL + `')`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS retrieval_fts_index USING fts5(
 			unit_id UNINDEXED,
 			memory_space UNINDEXED,
@@ -249,7 +303,7 @@ func ensureFTSIndexes(ctx context.Context, tx *sql.Tx, rebuild bool) error {
 			unit_kind UNINDEXED,
 			title,
 			body
-		)`,
+		, tokenize='` + tokenizerDDL + `')`,
 		`CREATE TRIGGER IF NOT EXISTS trg_memory_fts_index_insert
 		AFTER INSERT ON memory_fts
 		BEGIN
@@ -308,6 +362,46 @@ func ensureFTSIndexes(ctx context.Context, tx *sql.Tx, rebuild bool) error {
 		}
 	}
 	return nil
+}
+
+func shouldRebuildVectorIndexes(ctx context.Context, tx *sql.Tx, appliedNewMigration bool, embeddingDim int, force bool) (bool, error) {
+	if appliedNewMigration || force {
+		return true, nil
+	}
+	storedDim, err := metadataValue(ctx, tx, "embedding_dimension")
+	if err != nil {
+		return false, err
+	}
+	if storedDim == "" {
+		return false, nil
+	}
+	return storedDim != fmt.Sprintf("%d", embeddingDim), nil
+}
+
+func metadataValue(ctx context.Context, tx *sql.Tx, key string) (string, error) {
+	var value string
+	err := tx.QueryRowContext(ctx, `SELECT value FROM app_metadata WHERE key = ?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "no such table") && strings.Contains(msg, "app_metadata") {
+			return "", nil
+		}
+	}
+	return value, err
+}
+
+func ftsTokenizerDDL(tokenizer string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(tokenizer)) {
+	case "", "unicode61":
+		return "unicode61", nil
+	case "trigram":
+		return "trigram", nil
+	default:
+		return "", fmt.Errorf("unsupported fts tokenizer %q", tokenizer)
+	}
 }
 
 func boolString(v bool) string {

@@ -3,6 +3,7 @@ package cam
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -156,7 +157,7 @@ func (a *App) SyncStatus(ctx context.Context, namespace string) (api.SyncStatusR
 	}
 	if resp.StatusCode >= http.StatusBadRequest || !envelope.OK {
 		if envelope.Error != nil && envelope.Error.Message != "" {
-			return api.SyncStatusResponse{}, fmt.Errorf(envelope.Error.Message)
+			return api.SyncStatusResponse{}, errors.New(envelope.Error.Message)
 		}
 		return api.SyncStatusResponse{}, fmt.Errorf("sync status request failed")
 	}

@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"crdt-agent-memory/internal/config"
 	"crdt-agent-memory/internal/extensions"
 )
 
@@ -55,6 +58,8 @@ func (a *App) Doctor(ctx context.Context) (DoctorReport, error) {
 		return report, nil
 	}
 	add("config.load", true, cfg.API.BaseURL)
+	add("search_profile", true, cfg.Search.Profile+"/"+cfg.Search.FTSTokenizer)
+	add("embedding_provider", true, cfg.Embedding.Provider)
 
 	if _, err := os.Stat(cfg.SigningKeyPath); err != nil {
 		add("signing_key", false, cfg.SigningKeyPath)
@@ -116,7 +121,42 @@ func (a *App) Doctor(ctx context.Context) (DoctorReport, error) {
 	} else {
 		warn("memoryd_health", "memoryd is not running")
 	}
+	if ok, detail := embeddingProviderHealthy(ctx, cfg); ok {
+		add("embedding_provider_health", true, detail)
+	} else {
+		warn("embedding_provider_health", detail)
+	}
 	return report, nil
+}
+
+func embeddingProviderHealthy(ctx context.Context, cfg config.Config) (bool, string) {
+	provider := strings.ToLower(strings.TrimSpace(cfg.Embedding.Provider))
+	switch provider {
+	case "", "local":
+		return true, "local"
+	case "ruri-http":
+		if strings.TrimSpace(cfg.Embedding.BaseURL) == "" {
+			return false, "embedding.base_url is empty"
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Embedding.BaseURL, nil)
+		if err != nil {
+			return false, err.Error()
+		}
+		client := &http.Client{Timeout: time.Duration(cfg.Embedding.TimeoutMS) * time.Millisecond}
+		resp, err := client.Do(req)
+		if err != nil {
+			return false, err.Error()
+		}
+		defer resp.Body.Close()
+		return true, fmt.Sprintf("%s status=%d", cfg.Embedding.BaseURL, resp.StatusCode)
+	case "openai":
+		if strings.TrimSpace(cfg.Embedding.Model) == "" {
+			return false, "embedding.model is empty"
+		}
+		return true, cfg.Embedding.Model
+	default:
+		return false, "unsupported provider " + cfg.Embedding.Provider
+	}
 }
 
 func extensionPath(configuredPath, name string) (string, bool, error) {

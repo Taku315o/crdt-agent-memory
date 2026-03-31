@@ -29,6 +29,7 @@ type InitResult struct {
 	DataDir       string
 	APIBaseURL    string
 	SyncPublicURL string
+	SearchProfile string
 }
 
 type UpOptions struct {
@@ -44,13 +45,20 @@ type ServiceStatus struct {
 }
 
 type Status struct {
-	Profile      string
-	ConfigPath   string
-	SettingsPath string
-	DatabasePath string
-	StartedAt    string
-	SyncEnabled  bool
-	Services     []ServiceStatus
+	Profile           string
+	ConfigPath        string
+	SettingsPath      string
+	DatabasePath      string
+	StartedAt         string
+	SyncEnabled       bool
+	SearchProfile     string
+	FTSTokenizer      string
+	RankingProfile    string
+	EmbeddingProvider string
+	EmbeddingModel    string
+	EmbeddingBaseURL  string
+	EmbeddingDim      int
+	Services          []ServiceStatus
 }
 
 func (a *App) Init(ctx context.Context) (InitResult, error) {
@@ -108,6 +116,7 @@ func (a *App) Init(ctx context.Context) (InitResult, error) {
 		DataDir:       layout.DataDir,
 		APIBaseURL:    cfg.API.BaseURL,
 		SyncPublicURL: cfg.Sync.PublicURL,
+		SearchProfile: cfg.Search.Profile,
 	}, nil
 }
 
@@ -230,6 +239,13 @@ func (a *App) Status(ctx context.Context) (Status, error) {
 	}
 	if cfg.PeerID != "" {
 		status.DatabasePath = cfg.DatabasePath
+		status.SearchProfile = cfg.Search.Profile
+		status.FTSTokenizer = cfg.Search.FTSTokenizer
+		status.RankingProfile = cfg.Search.RankingProfile
+		status.EmbeddingProvider = cfg.Embedding.Provider
+		status.EmbeddingModel = cfg.Embedding.Model
+		status.EmbeddingBaseURL = cfg.Embedding.BaseURL
+		status.EmbeddingDim = cfg.Embedding.Dimension
 	}
 	settings, err := loadSettings(layout.SettingsPath)
 	if err != nil {
@@ -323,6 +339,20 @@ func ensureConfig(layout Layout) (config.Config, error) {
 			BatchLimit:  256,
 			OnceTimeout: 5000,
 		},
+	}
+	if layout.Profile == "ja" {
+		cfg.Search = config.Search{
+			Profile:        "ja",
+			FTSTokenizer:   "trigram",
+			RankingProfile: "ja-default",
+		}
+		cfg.Embedding = config.Embedding{
+			Provider:  "ruri-http",
+			Model:     "cl-nagoya-ruri-v3",
+			BaseURL:   "http://127.0.0.1:8000/embed",
+			Dimension: 768,
+			TimeoutMS: 3000,
+		}
 	}
 	raw, err := yaml.Marshal(&cfg)
 	if err != nil {

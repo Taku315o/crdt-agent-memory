@@ -11,20 +11,59 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
+
+	"crdt-agent-memory/internal/config"
 )
 
-const Dimension = 8
+const DefaultDimension = 8
+
+type Config struct {
+	Provider  string
+	Model     string
+	BaseURL   string
+	APIKey    string
+	Dimension int
+	Timeout   time.Duration
+}
 
 type Provider interface {
 	Embed(ctx context.Context, text string) ([]float64, error)
 }
 
 var (
-	providerOnce sync.Once
-	defaultProv  Provider
-	defaultErr   error
+	providerMu    sync.Mutex
+	providerOnce  sync.Once
+	defaultProv   Provider
+	defaultErr    error
+	configuredCfg *Config
 )
+
+func Configure(cfg config.Embedding) {
+	providerMu.Lock()
+	defer providerMu.Unlock()
+	timeout := time.Duration(cfg.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	configuredCfg = &Config{
+		Provider:  strings.TrimSpace(cfg.Provider),
+		Model:     strings.TrimSpace(cfg.Model),
+		BaseURL:   strings.TrimSpace(cfg.BaseURL),
+		Dimension: cfg.Dimension,
+		Timeout:   timeout,
+	}
+	providerOnce = sync.Once{}
+	defaultProv = nil
+	defaultErr = nil
+}
+
+func CurrentConfig() Config {
+	providerMu.Lock()
+	defer providerMu.Unlock()
+	return resolvedConfigLocked()
+}
 
 func FromText(ctx context.Context, text string) ([]float64, error) {
 	prov, err := defaultProvider()
@@ -35,36 +74,79 @@ func FromText(ctx context.Context, text string) ([]float64, error) {
 }
 
 func LocalFromText(text string) []float64 {
-	return localEmbed(text)
+	return localEmbed(text, DefaultDimension)
 }
 
 func defaultProvider() (Provider, error) {
 	providerOnce.Do(func() {
-		defaultProv, defaultErr = providerFromEnv()
+		cfg := CurrentConfig()
+		defaultProv, defaultErr = providerFromConfig(cfg)
 	})
 	return defaultProv, defaultErr
 }
 
-func providerFromEnv() (Provider, error) {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("EMBEDDING_PROVIDER"))) {
+func providerFromConfig(cfg Config) (Provider, error) {
+	switch strings.ToLower(strings.TrimSpace(cfg.Provider)) {
 	case "", "local":
-		return localProvider{}, nil
+		return localProvider{dimension: normalizeDimension(cfg.Dimension)}, nil
 	case "openai":
-		return newOpenAIProviderFromEnv()
+		return newOpenAIProvider(cfg)
+	case "ruri-http":
+		return newRuriHTTPProvider(cfg)
 	default:
-		return nil, fmt.Errorf("unsupported embedding provider %q", os.Getenv("EMBEDDING_PROVIDER"))
+		return nil, fmt.Errorf("unsupported embedding provider %q", cfg.Provider)
 	}
 }
 
-type localProvider struct{}
-
-func (localProvider) Embed(_ context.Context, text string) ([]float64, error) {
-	return localEmbed(text), nil
+func resolvedConfigLocked() Config {
+	cfg := Config{
+		Provider:  "local",
+		Dimension: DefaultDimension,
+		Timeout:   3 * time.Second,
+	}
+	if configuredCfg != nil {
+		cfg = *configuredCfg
+		if cfg.Dimension <= 0 {
+			cfg.Dimension = DefaultDimension
+		}
+		if cfg.Timeout <= 0 {
+			cfg.Timeout = 3 * time.Second
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("EMBEDDING_PROVIDER")); raw != "" {
+		cfg.Provider = raw
+	}
+	if raw := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); raw != "" {
+		cfg.APIKey = raw
+	}
+	if raw := strings.TrimSpace(os.Getenv("OPENAI_EMBEDDING_MODEL")); raw != "" {
+		cfg.Model = raw
+	}
+	if raw := strings.TrimSpace(os.Getenv("OPENAI_API_BASE")); raw != "" {
+		cfg.BaseURL = raw
+	}
+	return cfg
 }
 
-func localEmbed(text string) []float64 {
+func normalizeDimension(v int) int {
+	if v <= 0 {
+		return DefaultDimension
+	}
+	return v
+}
+
+type localProvider struct {
+	dimension int
+}
+
+func (p localProvider) Embed(_ context.Context, text string) ([]float64, error) {
+	return localEmbed(text, p.dimension), nil
+}
+
+func localEmbed(text string, dimension int) []float64 {
+	dimension = normalizeDimension(dimension)
 	tokens := tokenize(text)
-	vec := make([]float64, Dimension)
+	vec := make([]float64, dimension)
 	if len(tokens) == 0 {
 		return vec
 	}
@@ -78,10 +160,10 @@ func localEmbed(text string) []float64 {
 			weight += 0.15
 		}
 
-		vec[hashBucket(token)] += weight
+		vec[hashBucket(token, dimension)] += weight
 		if i+1 < len(tokens) {
 			bigram := token + " " + tokens[i+1]
-			vec[hashBucket(bigram)] += 0.5
+			vec[hashBucket(bigram, dimension)] += 0.5
 		}
 	}
 
@@ -133,10 +215,10 @@ func isStopWord(token string) bool {
 	}
 }
 
-func hashBucket(token string) int {
+func hashBucket(token string, dimension int) int {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(token))
-	return int(h.Sum64() % Dimension)
+	return int(h.Sum64() % uint64(dimension))
 }
 
 func normalize(vec []float64) []float64 {
@@ -169,27 +251,31 @@ type openAIProvider struct {
 	apiKey     string
 	model      string
 	baseURL    string
+	dimension  int
 	httpClient *http.Client
 }
 
-func newOpenAIProviderFromEnv() (Provider, error) {
-	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+func newOpenAIProvider(cfg Config) (Provider, error) {
+	apiKey := strings.TrimSpace(cfg.APIKey)
 	if apiKey == "" {
-		return nil, errors.New("OPENAI_API_KEY is required when EMBEDDING_PROVIDER=openai")
+		return nil, errors.New("OPENAI_API_KEY is required when embedding.provider=openai")
 	}
-	model := strings.TrimSpace(os.Getenv("OPENAI_EMBEDDING_MODEL"))
+	model := strings.TrimSpace(cfg.Model)
 	if model == "" {
 		model = "text-embedding-3-small"
 	}
-	baseURL := strings.TrimSpace(os.Getenv("OPENAI_API_BASE"))
+	baseURL := strings.TrimSpace(cfg.BaseURL)
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1/embeddings"
 	}
 	return openAIProvider{
-		apiKey:     apiKey,
-		model:      model,
-		baseURL:    baseURL,
-		httpClient: http.DefaultClient,
+		apiKey:    apiKey,
+		model:     model,
+		baseURL:   baseURL,
+		dimension: normalizeDimension(cfg.Dimension),
+		httpClient: &http.Client{
+			Timeout: cfg.Timeout,
+		},
 	}, nil
 }
 
@@ -243,7 +329,85 @@ func (p openAIProvider) Embed(ctx context.Context, text string) ([]float64, erro
 	if len(parsed.Data) == 0 || len(parsed.Data[0].Embedding) == 0 {
 		return nil, errors.New("openai embeddings api returned no embedding data")
 	}
-	return compressEmbedding(parsed.Data[0].Embedding, Dimension), nil
+	vector := parsed.Data[0].Embedding
+	if p.dimension > 0 && p.dimension != len(vector) {
+		return compressEmbedding(vector, p.dimension), nil
+	}
+	return normalize(vector), nil
+}
+
+type ruriHTTPProvider struct {
+	baseURL    string
+	model      string
+	dimension  int
+	httpClient *http.Client
+}
+
+type ruriEmbeddingResponse struct {
+	Embedding []float64 `json:"embedding"`
+	Model     string    `json:"model"`
+	Dimension int       `json:"dimension"`
+	Error     string    `json:"error,omitempty"`
+}
+
+func newRuriHTTPProvider(cfg Config) (Provider, error) {
+	baseURL := strings.TrimSpace(cfg.BaseURL)
+	if baseURL == "" {
+		return nil, errors.New("embedding.base_url is required when embedding.provider=ruri-http")
+	}
+	return ruriHTTPProvider{
+		baseURL:   baseURL,
+		model:     strings.TrimSpace(cfg.Model),
+		dimension: normalizeDimension(cfg.Dimension),
+		httpClient: &http.Client{
+			Timeout: cfg.Timeout,
+		},
+	}, nil
+}
+
+func (p ruriHTTPProvider) Embed(ctx context.Context, text string) ([]float64, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, errors.New("embedding text is required")
+	}
+	raw, err := json.Marshal(map[string]string{"input": text})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL, bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var parsed ruriEmbeddingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if parsed.Error != "" {
+			return nil, fmt.Errorf("ruri embeddings api: %s", parsed.Error)
+		}
+		return nil, fmt.Errorf("ruri embeddings api: unexpected status %s", resp.Status)
+	}
+	if len(parsed.Embedding) == 0 {
+		return nil, errors.New("ruri embeddings api returned no embedding data")
+	}
+	if parsed.Dimension > 0 && parsed.Dimension != len(parsed.Embedding) {
+		return nil, fmt.Errorf("ruri embeddings api reported dimension %d but returned %d values", parsed.Dimension, len(parsed.Embedding))
+	}
+	if p.dimension > 0 && len(parsed.Embedding) != p.dimension {
+		return nil, fmt.Errorf("ruri embeddings api returned dimension %d, want %d", len(parsed.Embedding), p.dimension)
+	}
+	if p.model != "" && parsed.Model != "" && parsed.Model != p.model {
+		return nil, fmt.Errorf("ruri embeddings api returned model %q, want %q", parsed.Model, p.model)
+	}
+	return normalize(parsed.Embedding), nil
 }
 
 func compressEmbedding(values []float64, dimension int) []float64 {

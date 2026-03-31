@@ -50,7 +50,7 @@ func newInitCommand(app *cam.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "profile=%s\nconfig=%s\ndata=%s\napi=%s\nsync=%s\n", result.Profile, result.ConfigPath, result.DataDir, result.APIBaseURL, result.SyncPublicURL)
+			fmt.Fprintf(cmd.OutOrStdout(), "profile=%s\nconfig=%s\ndata=%s\napi=%s\nsync=%s\nsearch_profile=%s\n", result.Profile, result.ConfigPath, result.DataDir, result.APIBaseURL, result.SyncPublicURL, result.SearchProfile)
 			return nil
 		},
 	}
@@ -93,12 +93,19 @@ func newStatusCommand(app *cam.App) *cobra.Command {
 			}
 			fmt.Fprintf(
 				cmd.OutOrStdout(),
-				"profile=%s\nconfig=%s\nsettings=%s\ndb=%s\nsync_enabled=%t\n",
+				"profile=%s\nconfig=%s\nsettings=%s\ndb=%s\nsync_enabled=%t\nsearch_profile=%s\nfts_tokenizer=%s\nranking_profile=%s\nembedding_provider=%s\nembedding_model=%s\nembedding_base_url=%s\nembedding_dim=%d\n",
 				status.Profile,
 				status.ConfigPath,
 				status.SettingsPath,
 				status.DatabasePath,
 				status.SyncEnabled,
+				status.SearchProfile,
+				status.FTSTokenizer,
+				status.RankingProfile,
+				status.EmbeddingProvider,
+				status.EmbeddingModel,
+				status.EmbeddingBaseURL,
+				status.EmbeddingDim,
 			)
 			if status.StartedAt != "" {
 				if t, err := time.Parse(time.RFC3339, status.StartedAt); err == nil {

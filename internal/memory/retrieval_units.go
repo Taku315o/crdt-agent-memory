@@ -134,47 +134,61 @@ func upsertRetrievalUnit(ctx context.Context, tx *sql.Tx, unit retrievalUnitReco
 }
 
 func (s *Service) Recall(ctx context.Context, req RecallRequest) ([]RecallResult, error) {
+	resp, err := s.RecallDetailed(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Items, nil
+}
+
+func (s *Service) RecallDetailed(ctx context.Context, req RecallRequest) (RecallResponse, error) {
 	req = normalizeRecallRequest(req)
 	if req.Query == "" {
-		return nil, errors.New("query is required")
+		return RecallResponse{}, errors.New("query is required")
 	}
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 10
 	}
-	return s.recallRetrievalUnits(ctx, req, limit)
+	items, warnings, err := s.recallRetrievalUnits(ctx, req, limit)
+	if err != nil {
+		return RecallResponse{}, err
+	}
+	return RecallResponse{Items: items, Warnings: warnings}, nil
 }
 
-func (s *Service) recallRetrievalUnits(ctx context.Context, req RecallRequest, limit int) ([]RecallResult, error) {
+func (s *Service) recallRetrievalUnits(ctx context.Context, req RecallRequest, limit int) ([]RecallResult, []string, error) {
 	candidateLimit := limit * 10
 	if candidateLimit < 50 {
 		candidateLimit = 50
 	}
 
 	candidates := map[string]*recallCandidate{}
+	warnings := []string{}
 	vectorEnabled, err := s.retrievalVectorIndexEnabled(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if vectorEnabled {
 		vectorRows, err := s.collectRetrievalVectorCandidates(ctx, req, candidateLimit)
 		if err != nil {
-			return nil, err
+			warnings = append(warnings, "embedding provider unavailable; semantic ranking skipped")
+		} else {
+			mergeRetrievalCandidates(candidates, vectorRows)
 		}
-		mergeRetrievalCandidates(candidates, vectorRows)
 	}
 	ftsRows, err := s.collectRetrievalFTSCandidates(ctx, req, candidateLimit)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	mergeRetrievalCandidates(candidates, ftsRows)
 	if len(candidates) == 0 {
-		return []RecallResult{}, nil
+		return []RecallResult{}, warnings, nil
 	}
 
 	rows, err := s.loadRetrievalCandidateRows(ctx, candidates)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	idsBySpace := map[string][]string{}
 	for _, row := range rows {
@@ -184,13 +198,13 @@ func (s *Service) recallRetrievalUnits(ctx context.Context, req RecallRequest, l
 	}
 	graphStats, err := s.loadRecallGraphStats(ctx, idsBySpace)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	artifactStats, err := s.loadRecallArtifactStats(ctx, idsBySpace)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return rankRetrievalRows(rows, graphStats, artifactStats, limit), nil
+	return rankRetrievalRows(rows, graphStats, artifactStats, limit), warnings, nil
 }
 
 func allowedMemorySpaces(req RecallRequest) []string {
