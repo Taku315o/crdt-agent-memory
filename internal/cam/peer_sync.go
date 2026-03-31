@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"crdt-agent-memory/internal/api"
 	"crdt-agent-memory/internal/config"
@@ -142,7 +143,8 @@ func (a *App) SyncStatus(ctx context.Context, namespace string) (api.SyncStatusR
 	if err != nil {
 		return api.SyncStatusResponse{}, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return api.SyncStatusResponse{}, err
 	}
