@@ -360,7 +360,7 @@ func (s *Server) handleContextBuild(w http.ResponseWriter, r *http.Request) {
 		s.writeMemoryError(w, requestID, err)
 		return
 	}
-	s.writeOK(w, requestID, ContextBuildResponseFromResult(result), nil)
+	s.writeOK(w, requestID, ContextBuildResponseFromResult(result), result.Warnings)
 }
 
 func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {

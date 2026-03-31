@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"crdt-agent-memory/internal/config"
+	"crdt-agent-memory/internal/embedding"
 	"crdt-agent-memory/internal/memory"
 	"crdt-agent-memory/internal/memsync"
 	"crdt-agent-memory/internal/policy"
@@ -308,6 +310,14 @@ func TestCandidateApprovalContract(t *testing.T) {
 func TestContextBuildContract(t *testing.T) {
 	fixture := newAPIFixture(t)
 	client := fixture.server.Client()
+	embedding.Configure(config.Embedding{
+		Provider:  "ruri-http",
+		BaseURL:   "http://127.0.0.1:1/embed",
+		Model:     "cl-nagoya-ruri-v3",
+		Dimension: 768,
+		TimeoutMS: 100,
+	})
+	t.Cleanup(func() { embedding.Configure(config.Embedding{}) })
 
 	_, _ = doJSON(t, client, http.MethodPost, fixture.server.URL+"/v1/memory/store", StoreRequest{
 		Visibility:    memory.VisibilityPrivate,
@@ -340,6 +350,9 @@ func TestContextBuildContract(t *testing.T) {
 	}
 	if len(envelope.Data.ActivePrivateDecisions) == 0 {
 		t.Fatal("expected active_private_decisions")
+	}
+	if len(envelope.Warnings) == 0 {
+		t.Fatal("expected warnings")
 	}
 }
 

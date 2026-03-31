@@ -168,6 +168,7 @@ type ContextBundle struct {
 	RejectedOptions        []RecallResult    `json:"rejected_options"`
 	OpenTasks              []RecallResult    `json:"open_tasks"`
 	Artifacts              []ContextArtifact `json:"artifacts"`
+	Warnings               []string          `json:"warnings"`
 }
 
 type SignalRequest struct {

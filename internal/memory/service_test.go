@@ -299,6 +299,44 @@ func TestRecallDetailedReturnsVectorSchemaErrors(t *testing.T) {
 	}
 }
 
+func TestContextBuildPropagatesRecallWarnings(t *testing.T) {
+	fixture := newMemoryFixture(t, "peer-a")
+	ctx := fixture.ctx
+
+	if _, err := fixture.svc.Store(ctx, StoreRequest{
+		Visibility:    VisibilityPrivate,
+		Namespace:     "team/dev",
+		MemoryType:    "decision",
+		Body:          "context build private decision",
+		Subject:       "private",
+		OriginPeerID:  "peer-a",
+		AuthorAgentID: "agent-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	embedding.Configure(config.Embedding{
+		Provider:  "ruri-http",
+		BaseURL:   "http://127.0.0.1:1/embed",
+		Model:     "cl-nagoya-ruri-v3",
+		Dimension: 768,
+		TimeoutMS: 100,
+	})
+	t.Cleanup(func() { embedding.Configure(config.Embedding{}) })
+
+	bundle, err := fixture.svc.ContextBuild(ctx, ContextBuildRequest{
+		Query:           "context build private decision",
+		Namespaces:      []string{"team/dev"},
+		LimitPerSection: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Warnings) == 0 {
+		t.Fatal("expected context build warnings")
+	}
+}
+
 func TestRecallRanksValidBeforeMissingAndByTrustWeight(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "ranking.sqlite")

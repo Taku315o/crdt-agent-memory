@@ -16,6 +16,16 @@ func (s *Service) ContextBuild(ctx context.Context, req ContextBuildRequest) (Co
 	if req.LimitPerSection <= 0 {
 		req.LimitPerSection = 5
 	}
+	warningSet := map[string]struct{}{}
+	appendWarnings := func(warnings []string) {
+		for _, warning := range warnings {
+			warning = strings.TrimSpace(warning)
+			if warning == "" {
+				continue
+			}
+			warningSet[warning] = struct{}{}
+		}
+	}
 	recall := func(r RecallRequest) ([]RecallResult, error) {
 		r.Query = strings.TrimSpace(r.Query)
 		if r.Query == "" {
@@ -24,7 +34,8 @@ func (s *Service) ContextBuild(ctx context.Context, req ContextBuildRequest) (Co
 		if r.Limit <= 0 {
 			r.Limit = req.LimitPerSection
 		}
-		items, _, err := s.recallRetrievalUnits(ctx, r, r.Limit)
+		items, warnings, err := s.recallRetrievalUnits(ctx, r, r.Limit)
+		appendWarnings(warnings)
 		return items, err
 	}
 	bundle := ContextBundle{}
@@ -109,6 +120,10 @@ func (s *Service) ContextBuild(ctx context.Context, req ContextBuildRequest) (Co
 		return ContextBundle{}, err
 	}
 	bundle.Artifacts = artifacts
+	for warning := range warningSet {
+		bundle.Warnings = append(bundle.Warnings, warning)
+	}
+	sort.Strings(bundle.Warnings)
 	return bundle, nil
 }
 
