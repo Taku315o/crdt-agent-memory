@@ -276,7 +276,13 @@ func (s *Service) collectRetrievalFTSCandidates(ctx context.Context, req RecallR
 		return nil, err
 	}
 	if ftsEnabled {
-		return s.collectRetrievalFTS5Candidates(ctx, req, limit)
+		candidates, err := s.collectRetrievalFTS5Candidates(ctx, req, limit)
+		if err != nil {
+			return nil, err
+		}
+		if len(candidates) > 0 {
+			return candidates, nil
+		}
 	}
 	return s.collectRetrievalLIKECandidates(ctx, req, limit)
 }
