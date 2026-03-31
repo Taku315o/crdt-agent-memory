@@ -131,6 +131,10 @@ func (a *App) Doctor(ctx context.Context) (DoctorReport, error) {
 
 func embeddingProviderHealthy(ctx context.Context, cfg config.Config) (bool, string) {
 	provider := strings.ToLower(strings.TrimSpace(cfg.Embedding.Provider))
+	timeout := time.Duration(cfg.Embedding.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
 	switch provider {
 	case "", "local":
 		return true, "local"
@@ -146,16 +150,22 @@ func embeddingProviderHealthy(ctx context.Context, cfg config.Config) (bool, str
 		if err != nil {
 			return false, err.Error()
 		}
-		client := &http.Client{Timeout: time.Duration(cfg.Embedding.TimeoutMS) * time.Millisecond}
+		client := &http.Client{Timeout: timeout}
 		resp, err := client.Do(req)
 		if err != nil {
 			return false, err.Error()
 		}
 		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return false, fmt.Sprintf("%s status=%d", healthURL, resp.StatusCode)
+		}
 		return true, fmt.Sprintf("%s status=%d", healthURL, resp.StatusCode)
 	case "openai":
 		if strings.TrimSpace(cfg.Embedding.Model) == "" {
 			return false, "embedding.model is empty"
+		}
+		if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) == "" {
+			return false, "OPENAI_API_KEY is not set"
 		}
 		return true, cfg.Embedding.Model
 	default:
