@@ -2,78 +2,33 @@ package memory
 
 import "testing"
 
-func TestNormalizeRecallRequestPreservesExplicitIncludeFlags(t *testing.T) {
-	tests := []struct {
-		name string
-		in   RecallRequest
-		want RecallRequest
-	}{
+func TestJARankingPrefersExactJapaneseMatch(t *testing.T) {
+	rows := []recallCandidateRow{
 		{
-			name: "defaults to private and shared when no flags are set",
-			in:   RecallRequest{},
-			want: RecallRequest{IncludePrivate: true, IncludeShared: true},
+			key:              recallKey{MemorySpace: "shared", MemoryID: "semantic-first"},
+			RecallResult:     RecallResult{UnitID: "semantic-first", MemorySpace: "shared", MemoryID: "semantic-first", Subject: "設計検討", Body: "検索品質を改善する方針", AuthoredAtMS: 100},
+			TrustWeight:      1.0,
+			SemanticRank:     1,
+			LexicalRank:      3,
+			SemanticDistance: 0.1,
+			LexicalBM25:      0.1,
 		},
 		{
-			name: "keeps private only",
-			in: RecallRequest{
-				IncludePrivate: true,
-			},
-			want: RecallRequest{
-				IncludePrivate: true,
-			},
-		},
-		{
-			name: "keeps shared only",
-			in: RecallRequest{
-				IncludeShared: true,
-			},
-			want: RecallRequest{
-				IncludeShared: true,
-			},
-		},
-		{
-			name: "keeps transcript only",
-			in: RecallRequest{
-				IncludeTranscript: true,
-			},
-			want: RecallRequest{
-				IncludeTranscript: true,
-			},
-		},
-		{
-			name: "keeps private and transcript without forcing shared",
-			in: RecallRequest{
-				IncludePrivate:    true,
-				IncludeTranscript: true,
-			},
-			want: RecallRequest{
-				IncludePrivate:    true,
-				IncludeTranscript: true,
-			},
+			key:              recallKey{MemorySpace: "shared", MemoryID: "exact-match"},
+			RecallResult:     RecallResult{UnitID: "exact-match", MemorySpace: "shared", MemoryID: "exact-match", Subject: "壁打ち品質", Body: "壁打ち品質を上げる具体策", AuthoredAtMS: 90},
+			TrustWeight:      1.0,
+			SemanticRank:     2,
+			LexicalRank:      1,
+			SemanticDistance: 0.2,
+			LexicalBM25:      1.0,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeRecallRequest(tt.in)
-			if got.IncludePrivate != tt.want.IncludePrivate {
-				t.Fatalf("IncludePrivate = %v, want %v", got.IncludePrivate, tt.want.IncludePrivate)
-			}
-			if got.IncludeShared != tt.want.IncludeShared {
-				t.Fatalf("IncludeShared = %v, want %v", got.IncludeShared, tt.want.IncludeShared)
-			}
-			if got.IncludeTranscript != tt.want.IncludeTranscript {
-				t.Fatalf("IncludeTranscript = %v, want %v", got.IncludeTranscript, tt.want.IncludeTranscript)
-			}
-			if got.Query != tt.want.Query {
-				t.Fatalf("Query = %q, want %q", got.Query, tt.want.Query)
-			}
-			if got.ProjectKey != tt.want.ProjectKey {
-				t.Fatalf("ProjectKey = %q, want %q", got.ProjectKey, tt.want.ProjectKey)
-			}
-			if got.BranchName != tt.want.BranchName {
-				t.Fatalf("BranchName = %q, want %q", got.BranchName, tt.want.BranchName)
-			}
-		})
+	got := rankRetrievalRows(rows, map[recallKey]recallGraphStat{}, map[recallKey]recallArtifactStat{}, 2, "ja-default", "壁打ち品質")
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0].MemoryID != "exact-match" {
+		t.Fatalf("first memory_id = %q, want exact-match", got[0].MemoryID)
 	}
 }

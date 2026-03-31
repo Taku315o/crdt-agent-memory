@@ -28,6 +28,8 @@ type Metadata struct {
 }
 
 type MigrationOptions struct {
+	SearchProfile     string
+	RankingProfile    string
 	FTSTokenizer      string
 	EmbeddingDim      int
 	ForceRebuildIndex bool
@@ -198,6 +200,8 @@ func RunMigrationsWithOptions(ctx context.Context, db *sql.DB, opts MigrationOpt
 		"protocol_version":                meta.ProtocolVersion,
 		"min_compatible_protocol_version": meta.MinCompatibleProtocolVersion,
 		"fts5_enabled":                    boolString(ftsEnabled),
+		"search_profile":                  opts.SearchProfile,
+		"ranking_profile":                 opts.RankingProfile,
 		"fts_tokenizer":                   opts.FTSTokenizer,
 		"embedding_dimension":             fmt.Sprintf("%d", opts.EmbeddingDim),
 	} {
@@ -218,6 +222,12 @@ func RunMigrationsWithOptions(ctx context.Context, db *sql.DB, opts MigrationOpt
 func normalizeMigrationOptions(opts MigrationOptions) MigrationOptions {
 	if strings.TrimSpace(opts.FTSTokenizer) == "" {
 		opts.FTSTokenizer = "unicode61"
+	}
+	if strings.TrimSpace(opts.SearchProfile) == "" {
+		opts.SearchProfile = "default"
+	}
+	if strings.TrimSpace(opts.RankingProfile) == "" {
+		opts.RankingProfile = opts.SearchProfile
 	}
 	if opts.EmbeddingDim <= 0 {
 		opts.EmbeddingDim = 8

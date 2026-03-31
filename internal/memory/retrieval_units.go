@@ -204,7 +204,11 @@ func (s *Service) recallRetrievalUnits(ctx context.Context, req RecallRequest, l
 	if err != nil {
 		return nil, nil, err
 	}
-	return rankRetrievalRows(rows, graphStats, artifactStats, limit), warnings, nil
+	rankingProfile, err := s.loadRankingProfile(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rankRetrievalRows(rows, graphStats, artifactStats, limit, rankingProfile, req.Query), warnings, nil
 }
 
 func allowedMemorySpaces(req RecallRequest) []string {
@@ -592,14 +596,15 @@ func latestTranscriptChunkFilter(unitRef string) string {
 	`, unitRef, unitRef)
 }
 
-func rankRetrievalRows(rows []recallCandidateRow, graphStats map[recallKey]recallGraphStat, artifactStats map[recallKey]recallArtifactStat, limit int) []RecallResult {
+func rankRetrievalRows(rows []recallCandidateRow, graphStats map[recallKey]recallGraphStat, artifactStats map[recallKey]recallArtifactStat, limit int, rankingProfile string, query string) []RecallResult {
 	nowMS := time.Now().UnixMilli()
+	profile := retrievalRankingProfile(rankingProfile)
 	scored := make([]scoredRecallRow, 0, len(rows))
 	for _, row := range rows {
 		bucket := rankingBucket(row.MemorySpace, row.SignatureStatus, row.HasSignature)
-		score := recallScore(row, graphStats[row.key], artifactStats[row.key], nowMS)
+		score := recallScoreForProfile(row, graphStats[row.key], artifactStats[row.key], nowMS, profile, query)
 		if row.MemorySpace == "transcript" {
-			score += 25
+			score += profile.transcriptBonus
 		}
 		scored = append(scored, scoredRecallRow{
 			row:         row,
@@ -625,6 +630,103 @@ func rankRetrievalRows(rows []recallCandidateRow, graphStats map[recallKey]recal
 		out = append(out, item.row.RecallResult)
 	}
 	return out
+}
+
+type retrievalRankingConfig struct {
+	name               string
+	semanticWeight     float64
+	lexicalWeight      float64
+	graphWeight        float64
+	artifactWeight     float64
+	recencyWeight      float64
+	sourceWeight       float64
+	exactMatchBoost    float64
+	transcriptBonus    float64
+}
+
+func retrievalRankingProfile(name string) retrievalRankingConfig {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ja", "ja-default":
+		return retrievalRankingConfig{
+			name:            "ja-default",
+			semanticWeight:  0.80,
+			lexicalWeight:   0.50,
+			graphWeight:     42.0,
+			artifactWeight:  40.0,
+			recencyWeight:   5.0,
+			sourceWeight:    24.0,
+			exactMatchBoost: 30.0,
+			transcriptBonus: 40.0,
+		}
+	default:
+		return retrievalRankingConfig{
+			name:            "default",
+			semanticWeight:  0.60,
+			lexicalWeight:   0.40,
+			graphWeight:     40.0,
+			artifactWeight:  40.0,
+			recencyWeight:   5.0,
+			sourceWeight:    20.0,
+			exactMatchBoost: 0,
+			transcriptBonus: 25.0,
+		}
+	}
+}
+
+func recallScoreForProfile(row recallCandidateRow, graph recallGraphStat, artifact recallArtifactStat, nowMS int64, profile retrievalRankingConfig, query string) float64 {
+	bucket := rankingBucket(row.MemorySpace, row.SignatureStatus, row.HasSignature)
+	score := float64(3-bucket) * 1000.0
+	score += row.TrustWeight * 100.0
+	score += recallSourceScoreForProfile(row, profile) * profile.sourceWeight
+	score += recallGraphScore(graph) * profile.graphWeight
+	score += recallArtifactScore(artifact) * profile.artifactWeight
+	score += recallRecencyScore(row.AuthoredAtMS, nowMS) * profile.recencyWeight
+	score += exactMatchScore(row, query) * profile.exactMatchBoost
+	return score
+}
+
+func recallSourceScoreForProfile(row recallCandidateRow, profile retrievalRankingConfig) float64 {
+	score := 0.0
+	if row.SemanticRank > 0 {
+		score += profile.semanticWeight / float64(row.SemanticRank)
+	}
+	if row.LexicalRank > 0 {
+		score += profile.lexicalWeight / float64(row.LexicalRank)
+	}
+	return score
+}
+
+func exactMatchScore(row recallCandidateRow, query string) float64 {
+	query = strings.TrimSpace(strings.ToLower(query))
+	if query == "" {
+		return 0
+	}
+	subject := strings.ToLower(row.Subject)
+	body := strings.ToLower(row.Body)
+	switch {
+	case strings.Contains(subject, query):
+		return 1.0
+	case strings.Contains(body, query):
+		return 0.75
+	default:
+		return 0
+	}
+}
+
+func (s *Service) loadRankingProfile(ctx context.Context) (string, error) {
+	var value string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM app_metadata WHERE key = 'ranking_profile'`).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "default", nil
+	}
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "no such table") && strings.Contains(msg, "app_metadata") {
+			return "default", nil
+		}
+		return "", err
+	}
+	return value, nil
 }
 
 func (s *Service) retrievalVectorIndexEnabled(ctx context.Context) (bool, error) {

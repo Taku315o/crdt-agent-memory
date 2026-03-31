@@ -77,6 +77,8 @@ func main() {
 	switch command {
 	case "migrate":
 		meta, err := storage.RunMigrationsWithOptions(ctx, db, storage.MigrationOptions{
+			SearchProfile:  cfg.Search.Profile,
+			RankingProfile: cfg.Search.RankingProfile,
 			FTSTokenizer: cfg.Search.FTSTokenizer,
 			EmbeddingDim: cfg.Embedding.Dimension,
 		})
@@ -112,6 +114,8 @@ func main() {
 		)
 	case "serve":
 		meta, err := storage.RunMigrationsWithOptions(ctx, db, storage.MigrationOptions{
+			SearchProfile:  cfg.Search.Profile,
+			RankingProfile: cfg.Search.RankingProfile,
 			FTSTokenizer: cfg.Search.FTSTokenizer,
 			EmbeddingDim: cfg.Embedding.Dimension,
 		})

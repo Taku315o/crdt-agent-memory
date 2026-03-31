@@ -41,6 +41,8 @@ func main() {
 	}
 	defer db.Close()
 	meta, err := storage.RunMigrationsWithOptions(ctx, db, storage.MigrationOptions{
+		SearchProfile:  cfg.Search.Profile,
+		RankingProfile: cfg.Search.RankingProfile,
 		FTSTokenizer: cfg.Search.FTSTokenizer,
 		EmbeddingDim: cfg.Embedding.Dimension,
 	})
