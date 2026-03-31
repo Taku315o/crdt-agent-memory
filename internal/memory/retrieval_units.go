@@ -19,6 +19,8 @@ import (
 	"crdt-agent-memory/internal/embedding"
 )
 
+var errSemanticProviderUnavailable = errors.New("semantic provider unavailable")
+
 func normalizeRecallRequest(req RecallRequest) RecallRequest {
 	req.Query = strings.TrimSpace(req.Query)
 	req.ProjectKey = strings.TrimSpace(req.ProjectKey)
@@ -172,7 +174,11 @@ func (s *Service) recallRetrievalUnits(ctx context.Context, req RecallRequest, l
 	if vectorEnabled {
 		vectorRows, err := s.collectRetrievalVectorCandidates(ctx, req, candidateLimit)
 		if err != nil {
-			warnings = append(warnings, "embedding provider unavailable; semantic ranking skipped")
+			if errors.Is(err, errSemanticProviderUnavailable) {
+				warnings = append(warnings, "embedding provider unavailable; semantic ranking skipped")
+			} else {
+				return nil, nil, err
+			}
 		} else {
 			mergeRetrievalCandidates(candidates, vectorRows)
 		}
@@ -421,7 +427,7 @@ func termMatchScore(terms []string, text string) int {
 func (s *Service) collectRetrievalVectorCandidates(ctx context.Context, req RecallRequest, limit int) ([]recallCandidate, error) {
 	vector, err := embedding.FromQuery(ctx, req.Query)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errSemanticProviderUnavailable, err)
 	}
 	vectorJSON, err := json.Marshal(vector)
 	if err != nil {

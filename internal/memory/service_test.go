@@ -271,6 +271,34 @@ func TestRecallDetailedFallsBackToLexicalWithWarningWhenEmbeddingFails(t *testin
 	}
 }
 
+func TestRecallDetailedReturnsVectorSchemaErrors(t *testing.T) {
+	if testenv.SQLiteVecPath() == "" {
+		t.Skip("sqlite-vec not available")
+	}
+	fixture := newMemoryFixture(t, "peer-a")
+	ctx := fixture.ctx
+
+	if _, err := fixture.db.ExecContext(ctx, `DROP TABLE retrieval_embedding_vectors`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.db.ExecContext(ctx, `CREATE TABLE retrieval_embedding_vectors(memory_space TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+
+	embedding.Configure(config.Embedding{Provider: "local", Dimension: 8, TimeoutMS: 1000})
+	t.Cleanup(func() { embedding.Configure(config.Embedding{}) })
+
+	_, err := fixture.svc.RecallDetailed(ctx, RecallRequest{
+		Query:          "vector failure",
+		IncludeShared:  true,
+		IncludePrivate: false,
+		Limit:          5,
+	})
+	if err == nil {
+		t.Fatal("expected vector schema error")
+	}
+}
+
 func TestRecallRanksValidBeforeMissingAndByTrustWeight(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "ranking.sqlite")
