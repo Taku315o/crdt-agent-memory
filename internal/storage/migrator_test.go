@@ -40,7 +40,39 @@ func TestShouldBackfillFTSIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if needBackfill {
-		t.Fatal("needBackfill = true, want false when both tables already exist")
+		t.Fatal("needBackfill = true, want false when both tables already exist with the historical default tokenizer")
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TABLE app_metadata (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO app_metadata(key, value) VALUES('fts_tokenizer', 'trigram')`); err != nil {
+		t.Fatal(err)
+	}
+
+	needBackfill, err = shouldBackfillFTSIndexes(ctx, tx, false, "unicode61", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !needBackfill {
+		t.Fatal("needBackfill = false, want true when stored tokenizer differs from the configured tokenizer")
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM app_metadata WHERE key = 'fts_tokenizer'`); err != nil {
+		t.Fatal(err)
+	}
+
+	needBackfill, err = shouldBackfillFTSIndexes(ctx, tx, false, "trigram", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !needBackfill {
+		t.Fatal("needBackfill = false, want true when tokenizer metadata is missing and config differs from the historical default")
 	}
 
 	needBackfill, err = shouldBackfillFTSIndexes(ctx, tx, true, "unicode61", false)

@@ -285,7 +285,12 @@ func shouldBackfillFTSIndexes(ctx context.Context, tx *sql.Tx, appliedNewMigrati
 	if err != nil {
 		return false, err
 	}
-	return storedTokenizer != "" && storedTokenizer != tokenizer, nil
+	if storedTokenizer == "" {
+		// Older databases predate the fts_tokenizer metadata key and therefore
+		// implicitly used the historical default tokenizer.
+		return tokenizer != "unicode61", nil
+	}
+	return storedTokenizer != tokenizer, nil
 }
 
 func ensureFTSIndexes(ctx context.Context, tx *sql.Tx, rebuild bool, tokenizer string) error {
