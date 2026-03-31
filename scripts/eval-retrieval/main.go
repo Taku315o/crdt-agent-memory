@@ -97,11 +97,12 @@ func main() {
 		Dimension: embeddingDim,
 		TimeoutMS: embeddingTimeout,
 	})
-	db, err := openEvalDB(ctx)
+	db, cleanup, err := openEvalDB(ctx)
 	if err != nil {
 		fail(err)
 	}
 	defer db.Close()
+	defer cleanup()
 
 	if _, err := storage.RunMigrationsWithOptions(ctx, db, storage.MigrationOptions{
 		SearchProfile:  searchProfile,
@@ -239,14 +240,22 @@ func loadDataset(path string) (evalDataset, error) {
 	return dataset, nil
 }
 
-func openEvalDB(ctx context.Context) (*sql.DB, error) {
+func openEvalDB(ctx context.Context) (*sql.DB, func(), error) {
 	dir, err := os.MkdirTemp("", "cam-eval-*")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return storage.OpenSQLite(ctx, storage.OpenOptions{
+	db, err := storage.OpenSQLite(ctx, storage.OpenOptions{
 		Path: filepath.Join(dir, "eval.sqlite"),
 	})
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, nil, err
+	}
+	cleanup := func() {
+		_ = os.RemoveAll(dir)
+	}
+	return db, cleanup, nil
 }
 
 func latestChunkID(ctx context.Context, db *sql.DB, sessionID string) (string, error) {

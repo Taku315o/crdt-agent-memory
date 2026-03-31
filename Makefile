@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-GO_BIN ?= /opt/homebrew/bin/go
+GO_BIN ?= $(shell command -v go 2>/dev/null || printf '%s\n' "$(CURDIR)/.tools/go/bin/go")
 GOFLAGS ?= -tags sqlite_fts5
 TMP_BASE ?= /tmp/crdt-agent-memory-dev
 TOOLS_DIR ?= $(CURDIR)/.tools
@@ -8,9 +8,8 @@ CRSQLITE_DIR := $(TOOLS_DIR)/crsqlite
 SQLITE_VEC_DIR := $(TOOLS_DIR)/sqlite-vec
 PEER_A_CONFIG := $(TMP_BASE)/peer-a/config.yaml
 PEER_B_CONFIG := $(TMP_BASE)/peer-b/config.yaml
-GO_ENV := PATH=/opt/homebrew/bin:$$PATH
-GO_RUN := $(GO_ENV) "$(GO_BIN)" run $(GOFLAGS)
-GO_RUN_CLEANUP := $(GO_ENV) ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS)
+GO_RUN := "$(GO_BIN)" run $(GOFLAGS)
+GO_RUN_CLEANUP := ./scripts/run-with-cleanup.sh "$(GO_BIN)" run $(GOFLAGS)
 
 .PHONY: help bootstrap-dev check-deps build-cam build-mcp setup-mcp install-mcp-clients test setup-dev-configs migrate-peer-a migrate-peer-b diag-peer-a diag-peer-b serve-peer-a serve-peer-b index-peer-a index-peer-b sync-peer-a sync-peer-b smoke-sync smoke-sync-confirm smoke-recall-confirm smoke-e2e-manual clean-dev
 
@@ -54,15 +53,15 @@ check-deps:
 
 build-cam: check-deps
 	mkdir -p ./bin
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" build $(GOFLAGS) -o ./bin/cam ./cmd/cam
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" build $(GOFLAGS) -o ./bin/memoryd ./cmd/memoryd
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" build $(GOFLAGS) -o ./bin/indexd ./cmd/indexd
-	PATH=/opt/homebrew/bin:$$PATH "$(GO_BIN)" build $(GOFLAGS) -o ./bin/syncd ./cmd/syncd
-	PATH=/opt/homebrew/bin:$$PATH CRSQLITE_PATH="$(CRSQLITE_DIR)/crsqlite.dylib" SQLITE_VEC_PATH="$(SQLITE_VEC_DIR)/vec0.dylib" "$(GO_BIN)" build $(GOFLAGS) -o ./bin/memory-mcp ./cmd/memory-mcp
+	"$(GO_BIN)" build $(GOFLAGS) -o ./bin/cam ./cmd/cam
+	"$(GO_BIN)" build $(GOFLAGS) -o ./bin/memoryd ./cmd/memoryd
+	"$(GO_BIN)" build $(GOFLAGS) -o ./bin/indexd ./cmd/indexd
+	"$(GO_BIN)" build $(GOFLAGS) -o ./bin/syncd ./cmd/syncd
+	CRSQLITE_PATH="$(CRSQLITE_DIR)/crsqlite.dylib" SQLITE_VEC_PATH="$(SQLITE_VEC_DIR)/vec0.dylib" "$(GO_BIN)" build $(GOFLAGS) -o ./bin/memory-mcp ./cmd/memory-mcp
 
 build-mcp: check-deps
 	mkdir -p ./bin
-	PATH=/opt/homebrew/bin:$$PATH CRSQLITE_PATH="$(CRSQLITE_DIR)/crsqlite.dylib" SQLITE_VEC_PATH="$(SQLITE_VEC_DIR)/vec0.dylib" "$(GO_BIN)" build $(GOFLAGS) -o ./bin/memory-mcp ./cmd/memory-mcp
+	CRSQLITE_PATH="$(CRSQLITE_DIR)/crsqlite.dylib" SQLITE_VEC_PATH="$(SQLITE_VEC_DIR)/vec0.dylib" "$(GO_BIN)" build $(GOFLAGS) -o ./bin/memory-mcp ./cmd/memory-mcp
 
 setup-mcp: build-mcp
 	GO_BIN="$(GO_BIN)" ./scripts/install-client-configs.sh
@@ -70,7 +69,7 @@ setup-mcp: build-mcp
 install-mcp-clients: setup-mcp
 
 test: check-deps
-	PATH=/opt/homebrew/bin:$$PATH CRSQLITE_PATH="$(CRSQLITE_DIR)/crsqlite.dylib" SQLITE_VEC_PATH="$(SQLITE_VEC_DIR)/vec0.dylib" "$(GO_BIN)" test $(GOFLAGS) ./...
+	CRSQLITE_PATH="$(CRSQLITE_DIR)/crsqlite.dylib" SQLITE_VEC_PATH="$(SQLITE_VEC_DIR)/vec0.dylib" "$(GO_BIN)" test $(GOFLAGS) ./...
 
 setup-dev-configs: bootstrap-dev
 	mkdir -p "$(TMP_BASE)/peer-a" "$(TMP_BASE)/peer-b"
